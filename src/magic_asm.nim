@@ -1,4 +1,4 @@
-import tables, unicode
+import tables, unicode, strutils
 import fusion/matching
 
 {.experimental: "overloadableEnums".}
@@ -65,6 +65,7 @@ type
     unknown
     invalidAddress = "invalid port/memory address"
     invalidFunction = "invalid function"
+    parseError = "parse error"
 
   MagasmError* = ref object of CatchableError
     kind: MagasmErrorKind
@@ -234,29 +235,27 @@ proc parseMagasm*(code: string, flags: set[MagasmFlag]): MagasmCode =
       eol
       colon
       semicolon
-      cnd
       num
       str
-      variable
-      mem
-      fn
+      op
+      word
 
     Token = object
       case kind: TokenKind
-      of cnd:
-        cnd: ConditionalExecution
       of num:
-        i: int16
+        num: int64
       of str:
         str: string
-      of variable:
-        variable: char
-      of fn:
-        fn: Function
+      of word:
+        word: string
+      of op:
+        op: string
       else: discard
   
   proc tokenize(code: string, flags: set[MagasmFlag]): seq[Token] =
     var i = 0
+    var line = 0
+    var isString: bool
     
     proc peek(delta=0): char =
       if i + delta < code.len:
@@ -265,6 +264,10 @@ proc parseMagasm*(code: string, flags: set[MagasmFlag]): MagasmCode =
         '\0'
     
     proc next(delta=0): char =
+      for i in i .. min(i+delta, code.high):
+        if code[i] == '\n':
+          inc line
+          isString = false
       i += delta
       defer: inc i
       if i < code.len:
@@ -273,45 +276,123 @@ proc parseMagasm*(code: string, flags: set[MagasmFlag]): MagasmCode =
         '\0'
     
     proc skip(n=1) =
+      for i in i ..< min(i+n, code.len):
+        if code[i] == '\n':
+          inc line
+          isString = false
       i += n
-    
 
     while i < code.len:
       let c = peek()
 
       template parseNumber =
-        ## todo
+        var r = ""
+        while true:
+          let x = peek()
+          if not(x in '0'..'9' or (floatNumbers in flags and x == '.') or (negativeNumbers in flags and x == '.')):
+            break
+          r.add x
+          skip()
+        if '.' in r:
+          result.add Token(kind: num, num: cast[int32](parseFloat(r).float32).int64)
+        else:
+          result.add Token(kind: num, num: parseInt(r).int64)
       
       template parseWord =
-        ## todo
+        var r = ""
+        while true:
+          let x = peek()
+          if not(x in 'a'..'z' or x in 'A'..'Z'):
+            break
+          r.add x
+          skip()
+        if r == "ech":
+          isString = true
+          skip()
+        result.add Token(kind: word, word: r)
 
-      if c in '0'..'9':
-        parseNumber
+      template parseOp =
+        var r = ""
+        while true:
+          let x = peek()
+          if x notin "+-*/!=$%&><|":
+            break
+          r.add x
+          skip()
+        result.add Token(kind: op, op: r)
       
+      template parseString =
+        var r = ""
+        while true:
+          let x = next()
+          if x == '\n': break
+          r.add x
+        result.add Token(kind: str, str: r)
+        result.add Token(kind: eol)
+      
+      
+      if isString:
+        parseString
+
+      elif c in '0'..'9':
+        parseNumber
+
       elif (c in 'a'..'z') or (c in 'A'..'Z'):
         parseWord
-      
-      elif c == '-':
-        if (negativeNumbers in flags) and (peek(1) in '0'..'9'):
-          parseNumber
-        else:
-          result.add Token(kind: cnd, cnd: false)
-      
-      elif c == '+':
-        result.add Token(kind: cnd, cnd: true)
-      
-      elif c == '*':
-        if errorHandling in flags:
-          result.add Token(kind: cnd, cnd: error)
-        else:
-          inc i
-      
+
+      elif c == '-' and (negativeNumbers in flags) and (peek(1) in '0'..'9'):
+        parseNumber
+      elif c in "+-*/!=$%&><|":
+        parseOp
+
       elif c == ';':
         result.add Token(kind: semicolon)
-      
+        while next() != '\n': discard
+        result.add Token(kind: eol)
+
       elif c in {'\n', '\0'}:
         result.add Token(kind: eol)
+        inc line
+        isString = false
+        inc i
+
+      elif c == ':':
+        result.add Token(kind: colon)
+        inc i
+
+      elif c notin " \r\t":
+        raise newMagasmError(parseError, line)
 
       else:
         inc i
 
+  proc parse(tokens: seq[Token]): seq[MagasmStatement] =
+    ## todo
+    #[
+        if r.len == 3:
+          block a:
+            for x in Function.nop..Function.ech:
+              if r == $x:
+                result.add Token(kind: fn, fn: x)
+                if x == ech:
+                  isString = true
+                break a
+            ## todo: add custom function
+        elif r.len == 1:
+          result.add Token(kind: reg, reg: Register(size: r16, reg: r[0]))
+        elif reg2 in flags and r.len == 2:
+          result.add Token(kind: reg, reg: Register(size: r32, reg2: [r[0], r[1]]))
+        elif reg4 in flags and r.len == 4:
+          result.add Token(kind: reg, reg: Register(size: r64, reg4: [r[0], r[1], r[2], r[3]]))]#
+  
+  echo code.tokenize(flags)
+
+discard parseMagasm(
+"""
+start:
+  ba = ab
+  slp 1
+  ->start
+""",
+  {reg2, reg4, negativeNumbers, floatNumbers}
+)
