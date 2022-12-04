@@ -1,11 +1,12 @@
-import tables, unicode, strutils
+import tables, unicode, strutils, options
 import fusion/matching
 
 {.experimental: "overloadableEnums".}
 {.experimental: "caseStmtMacros".}
+{.experimental: "callOperator".}
 
 type
-  MagasmStatementKind* = enum
+  StatementKind* = enum
     none
     label
     functionCall
@@ -43,27 +44,32 @@ type
     of true: reg: Register
     of false: i: int64
 
-  MagasmStatement* = object
-    case kind*: MagasmStatementKind
+  FunctionCall* = object
+    case kind*: Function
+    of ech:
+      ech*: string
+    of mov:
+      mov*: tuple[i: IntOrReg, o: Register]
+    of jmp:
+      jmp*: string
+    of slp:
+      slp*: IntOrReg
+    else:
+      args*: seq[IntOrReg]
+
+  Statement* = object
+    case kind*: StatementKind
     of none: discard
     of label:
       label*: string
     of functionCall:
-      case function*: Function
-      of ech:
-        ech*: string
-      of mov:
-        mov*: tuple[i: IntOrReg, o: Register]
-      of jmp:
-        jmp*: string
-      of slp:
-        slp*: IntOrReg
-      else:
-        args*: seq[IntOrReg]
+      functionCall*: FunctionCall
 
+  StatementCe* = object
+    statement*: Statement
     ce*: ConditionalExecution
 
-  MagasmCode* = seq[MagasmStatement]
+  MagasmCode* = seq[StatementCe]
 
 
   ParseError* = object of CatchableError
@@ -120,6 +126,16 @@ type
     of sleep: sleep*: int64
     of echo: echo*: string
     of error: error*: MagasmError
+
+
+proc `[]`(x: FunctionCall, i: static FieldIndex, kind: static Function): auto =
+  ## todo: fork hmatching
+  ## todo: create this proc automaticaly
+  when kind == mov:
+    x.mov
+  # todo: other functions
+  else:
+    x.args
 
 
 proc newMagasmError(kind: MagasmErrorKind, line: int, parent: ref Exception = nil): MagasmError =
@@ -188,15 +204,17 @@ proc step*(vm: var MagasmVmInstance): StepResult =
 
   let n = vm.code[vm.i]
   try:
-    case n
-    of none() | label() | functionCall(function: nop):
+    # todo: conditional execution
+    case n.statement
+    of none() | label() | functionCall(functionCall: nop()):
       inc vm.i
     
-    of functionCall(function: slp, slp: @i):
+    of functionCall(functionCall: slp(slp: @i)):
       ## note: builtin function
       return StepResult(kind: sleep, sleep: vm[i])
     
-    of functionCall(function: ech, ech: @s):
+    # todo: of functionCall(ech(@s)):
+    of functionCall(functionCall: ech(ech: @s)):
       ## note: builtin function
       ## formatting:
       ##   {a} + {bc} = somthing
@@ -224,9 +242,11 @@ proc step*(vm: var MagasmVmInstance): StepResult =
 
       return StepResult(kind: echo, echo: r)
 
-    of functionCall(function: mov, mov: (@i, @o)):
+    of functionCall(functionCall: mov(mov: (@i, @o))):
       ## note: builtin function
       vm[o] = vm[i]
+    
+    ## todo: jmp
   
   except MagasmError:
     if errorHandling notin vm.flags:
@@ -377,7 +397,7 @@ proc parseMagasm*(code: string, flags: set[MagasmFlag]): MagasmCode =
       else:
         inc i
 
-  proc parse(tokens: seq[Token]): seq[MagasmStatement] =
+  proc parse(tokens: seq[Token]): seq[StatementCe] =
     var i = 0
     var line = 0
     
@@ -417,7 +437,7 @@ proc parseMagasm*(code: string, flags: set[MagasmFlag]): MagasmCode =
         IntOrReg(isReg: true, reg: x.toRegister)
     
     while i < tokens.len:
-      var r: MagasmStatement
+      var r: StatementCe
 
       if (let x = peek(); x.kind == op and x.op in ["+", "-", "*"]):
         case x.op
@@ -429,8 +449,7 @@ proc parseMagasm*(code: string, flags: set[MagasmFlag]): MagasmCode =
       if (let x = peek(); x.kind == word and peek(1).kind == colon):
         if peek(2).kind != eol:
           raise newMagasmError(parseError, line)
-        r.kind = label
-        r.label = x.word
+        r.statement = Statement(kind: label, label: x.word)
         inc i, 3
         inc line
         result.add r
@@ -440,8 +459,7 @@ proc parseMagasm*(code: string, flags: set[MagasmFlag]): MagasmCode =
         block a:
           for f in Function.nop..Function.ech:
             if x.word == $f:
-              r.kind = functionCall
-              
+              r.statement = Statement(kind: functionCall, ) # todo
               break a
           # todo: custom functions
         inc i
@@ -462,9 +480,7 @@ proc parseMagasm*(code: string, flags: set[MagasmFlag]): MagasmCode =
           of "=":
             if a.kind == num:
               raise newMagasmError(parseError, line)
-            r.kind = functionCall
-            r.function = mov
-            r.mov = (b.toIntOrReg, a.toRegister)
+            r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: mov, mov: (b.toIntOrReg, a.toRegister)))
           # insert new binary operators here
         else:
           raise newMagasmError(parseError, line)
@@ -490,10 +506,7 @@ proc parseMagasm*(code: string, flags: set[MagasmFlag]): MagasmCode =
         newline
       
       if advancedOperators in flags and peek().kind == op and peek().op == "->" and peek(1).kind == word:
-        r.kind = functionCall
-        r.function = jmp
-        r.jmp = peek(1).word
-        
+        r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: jmp, jmp: peek(1).word))
         inc i, 2
         newline
 
