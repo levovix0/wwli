@@ -19,6 +19,7 @@ type
   Function* = enum
     nop  ## "no operation"
     mov  ## "move", assignment and message sending
+    jmp  ## "jump", goto label
     slp  ## "sleep", to end execution
     ech  ## "echo", for debugging
 
@@ -33,8 +34,12 @@ type
     of r32: reg2: array[2, char]
     of r64: reg4: array[4, char]
 
+  IsReg* = enum
+    true
+    false
+
   IntOrReg* = object
-    case isReg: bool
+    case isReg: IsReg
     of true: reg: Register
     of false: i: int64
 
@@ -45,12 +50,14 @@ type
       label*: string
     of functionCall:
       case function*: Function
-      of slp:
-        slp*: IntOrReg
       of ech:
         ech*: string
       of mov:
         mov*: tuple[i: IntOrReg, o: Register]
+      of jmp:
+        jmp*: string
+      of slp:
+        slp*: IntOrReg
       else:
         args*: seq[IntOrReg]
 
@@ -79,6 +86,10 @@ type
     reg2
     reg4
     semicolonsReqired
+    basicOperators
+    advancedOperators
+    customOperators  ## todo
+    customFunctions  ## todo
 
   MagasmVm* = object
     memory*: seq[char]
@@ -140,7 +151,7 @@ proc step*(vm: var MagasmVmInstance): StepResult =
     of r64: vm[x.reg4]
 
   proc `[]`(vm: MagasmVmInstance, x: IntOrReg): int64 =
-    if x.isReg: vm[x.reg]
+    if x.isReg == true: vm[x.reg]
     else: x.i
   
 
@@ -237,8 +248,8 @@ proc parseMagasm*(code: string, flags: set[MagasmFlag]): MagasmCode =
       semicolon
       num
       str
-      op
       word
+      op
 
     Token = object
       case kind: TokenKind
@@ -252,7 +263,7 @@ proc parseMagasm*(code: string, flags: set[MagasmFlag]): MagasmCode =
         op: string
       else: discard
   
-  proc tokenize(code: string, flags: set[MagasmFlag]): seq[Token] =
+  proc tokenize(code: string): seq[Token] =
     var i = 0
     var line = 0
     var isString: bool
@@ -289,7 +300,7 @@ proc parseMagasm*(code: string, flags: set[MagasmFlag]): MagasmCode =
         var r = ""
         while true:
           let x = peek()
-          if not(x in '0'..'9' or (floatNumbers in flags and x == '.') or (negativeNumbers in flags and x == '.')):
+          if not(x in '0'..'9' or (floatNumbers in flags and x == '.') or (negativeNumbers in flags and x == '-')):
             break
           r.add x
           skip()
@@ -367,32 +378,138 @@ proc parseMagasm*(code: string, flags: set[MagasmFlag]): MagasmCode =
         inc i
 
   proc parse(tokens: seq[Token]): seq[MagasmStatement] =
-    ## todo
-    #[
-        if r.len == 3:
-          block a:
-            for x in Function.nop..Function.ech:
-              if r == $x:
-                result.add Token(kind: fn, fn: x)
-                if x == ech:
-                  isString = true
-                break a
-            ## todo: add custom function
-        elif r.len == 1:
-          result.add Token(kind: reg, reg: Register(size: r16, reg: r[0]))
-        elif reg2 in flags and r.len == 2:
-          result.add Token(kind: reg, reg: Register(size: r32, reg2: [r[0], r[1]]))
-        elif reg4 in flags and r.len == 4:
-          result.add Token(kind: reg, reg: Register(size: r64, reg4: [r[0], r[1], r[2], r[3]]))]#
-  
-  echo code.tokenize(flags)
+    var i = 0
+    var line = 0
+    
+    proc peek(delta=0): Token =
+      if i + delta < tokens.len:
+        tokens[i + delta]
+      else: Token(kind: eol)
+    
+    proc toRegister(x: Token): Register =
+      case x
+      of word(word: @a is (len: 1)):
+        Register(size: r16, reg: a[0])
+      of word(word: @a is (len: 2)):
+        Register(size: r32, reg2: [a[0], a[1]])
+      of word(word: @a is (len: 4)):
+        Register(size: r64, reg4: [a[0], a[1], a[2], a[3]])
+      else: raise newMagasmError(parseError, line)
+    
+    template newline =
+      if not(
+        peek().kind == semicolon and peek(1).kind == eol or
+        semicolonsReqired notin flags and peek().kind == eol
+      ):
+        raise newMagasmError(parseError, line)
+      if peek().kind == semicolon and peek(1).kind == eol:
+        inc i, 2
+      else:
+        inc i
+      inc line
+      result.add r
+      continue
+    
+    proc toIntOrReg(x: Token): IntOrReg =
+      if x.kind == num:
+        IntOrReg(isReg: false, i: x.num)
+      else:
+        IntOrReg(isReg: true, reg: x.toRegister)
+    
+    while i < tokens.len:
+      var r: MagasmStatement
 
-discard parseMagasm(
+      if (let x = peek(); x.kind == op and x.op in ["+", "-", "*"]):
+        case x.op
+        of "+": r.ce = true
+        of "-": r.ce = false
+        of "*": r.ce = error
+        inc i
+      
+      if (let x = peek(); x.kind == word and peek(1).kind == colon):
+        if peek(2).kind != eol:
+          raise newMagasmError(parseError, line)
+        r.kind = label
+        r.label = x.word
+        inc i, 3
+        inc line
+        result.add r
+        continue
+
+      if (let x = peek(); x.kind == word and x.word.len == 3):
+        block a:
+          for f in Function.nop..Function.ech:
+            if x.word == $f:
+              r.kind = functionCall
+              
+              break a
+          # todo: custom functions
+        inc i
+        # todo: args
+        newline
+      
+      if (
+        let
+          a = peek(0)
+          o = peek(1)
+          b = peek(2)
+        o.kind == op and
+        ((a.kind == word and a.word.len in [1, 2, 4]) or a.kind == num) and
+        ((b.kind == word and b.word.len in [1, 2, 4]) or b.kind == num)
+      ):
+        if basicOperators in flags and o.op in ["="]:
+          case o.op
+          of "=":
+            if a.kind == num:
+              raise newMagasmError(parseError, line)
+            r.kind = functionCall
+            r.function = mov
+            r.mov = (b.toIntOrReg, a.toRegister)
+          # insert new binary operators here
+        else:
+          raise newMagasmError(parseError, line)
+        
+        inc i, 3
+        newline
+      
+      if (
+        let
+          o = peek(1)
+          a = peek(2)
+        o.kind == op and
+        ((a.kind == word and a.word.len in [1, 2, 4]) or a.kind == num)
+      ):
+        if basicOperators in flags and o.op in [""]:
+          case o.op
+          # insert new unary operators here
+          else: discard
+        else:
+          raise newMagasmError(parseError, line)
+        
+        inc i, 2
+        newline
+      
+      if advancedOperators in flags and peek().kind == op and peek().op == "->" and peek(1).kind == word:
+        r.kind = functionCall
+        r.function = jmp
+        r.jmp = peek(1).word
+        
+        inc i, 2
+        newline
+
+      result.add r
+      while peek().kind != eol: inc i
+      inc i
+  
+  code.tokenize.parse
+
+echo parseMagasm(
 """
 start:
-  ba = ab
-  slp 1
-  ->start
++ if1:
+  a = 1
+- if1:
+  a = -1
 """,
-  {reg2, reg4, negativeNumbers, floatNumbers}
+  {reg2, reg4, negativeNumbers, floatNumbers, advancedOperators, basicOperators}
 )
