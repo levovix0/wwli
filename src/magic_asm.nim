@@ -22,6 +22,11 @@ type
     mov  ## "move", assignment and message sending
     jmp  ## "jump", goto label
     slp  ## "sleep", to end execution
+
+    add  ## "add", add second value to first register
+    #jmo ## "jump offset", jump by X lines
+    sce  ## "set conditional execution", set ce flag to mask (1|0 + 2|0 + 4|0)
+    
     ech  ## "echo", for debugging
 
   RegisterSize* = enum
@@ -76,11 +81,11 @@ type
 
   MagasmErrorKind* = enum
     unknown
-    invalidAddress = "invalid port/memory address"
+    invalidAddress = "invalid port/memory/instruction address"
     invalidFunction = "invalid function"
     parseError = "parse error"
 
-  MagasmError* = ref object of CatchableError
+  MagasmError* = object of CatchableError
     kind: MagasmErrorKind
     line: int
 
@@ -107,11 +112,12 @@ type
   MagasmVmInstance* = object
     memory*: Table[char, int16]
     ports*: Table[char, tuple[read: proc: int64, write: proc(v: int64)]]
-    functions*: set[Function]
+    functions*: set[Function.add..Function.sce]
     code*: MagasmCode
     flags*: set[MagasmFlag]
     i*: int  ## instruction pointer
     err*: Option[tuple[e: MagasmError, stepsPassed: int]]  ## last error
+    ce*: set[ConditionalExecution.true..ConditionalExecution.error]
   
 
   StepResultKind* = enum
@@ -138,8 +144,8 @@ proc `[]`(x: FunctionCall, i: static FieldIndex, kind: static Function): auto =
     x.args
 
 
-proc newMagasmError(kind: MagasmErrorKind, line: int, parent: ref Exception = nil): MagasmError =
-  MagasmError(kind: kind, msg: $kind, line: line, parent: parent)
+proc newMagasmError(kind: MagasmErrorKind, line: int, parent: ref Exception = nil): ref MagasmError =
+  (ref MagasmError)(kind: kind, msg: "line " & $line & ": " & $kind, line: line, parent: parent)
 
 
 proc step*(vm: var MagasmVmInstance): StepResult =
@@ -204,13 +210,16 @@ proc step*(vm: var MagasmVmInstance): StepResult =
 
   let n = vm.code[vm.i]
   try:
-    # todo: conditional execution
+    if n.ce != no:
+      if n.ce notin vm.ce: return
+
     case n.statement
     of none() | label() | functionCall(functionCall: nop()):
       inc vm.i
     
     of functionCall(functionCall: slp(slp: @i)):
       ## note: builtin function
+      inc vm.i
       return StepResult(kind: sleep, sleep: vm[i])
     
     # todo: of functionCall(ech(@s)):
@@ -240,24 +249,34 @@ proc step*(vm: var MagasmVmInstance): StepResult =
         
         inc i
 
+      inc vm.i
       return StepResult(kind: echo, echo: r)
 
     of functionCall(functionCall: mov(mov: (@i, @o))):
       ## note: builtin function
       vm[o] = vm[i]
+      inc vm.i
     
-    ## todo: jmp
+    of functionCall(functionCall: jmp(jmp: @l)):
+      for j, x in vm.code:
+        if x.ce != no:
+          if x.ce notin vm.ce: continue
+        if x.statement.kind == label and x.statement.label == l:
+          vm.i = j
+          return
+      raise newMagasmError(invalidAddress, vm.i)
   
   except MagasmError:
+    inc vm.i
     if errorHandling notin vm.flags:
-      return StepResult(kind: error, error: getCurrentException().MagasmError)
+      return StepResult(kind: error, error: ((ref MagasmError)getCurrentException())[])
 
     elif vm.err.isSome:
       result = StepResult(kind: error, error: vm.err.get.e)
-      vm.err = some (getCurrentException().MagasmError, 0)
+      vm.err = some (((ref MagasmError)getCurrentException())[], 0)
     
     else:
-      vm.err = some (getCurrentException().MagasmError, 0)
+      vm.err = some (((ref MagasmError)getCurrentException())[], 0)
 
 
 proc parseMagasm*(code: string, flags: set[MagasmFlag]): MagasmCode =
@@ -416,10 +435,10 @@ proc parseMagasm*(code: string, flags: set[MagasmFlag]): MagasmCode =
         Register(size: r64, reg4: [a[0], a[1], a[2], a[3]])
       else: raise newMagasmError(parseError, line)
     
-    template newline =
+    template newline(semicolonReq: untyped = true) =
       if not(
         peek().kind == semicolon and peek(1).kind == eol or
-        semicolonsReqired notin flags and peek().kind == eol
+        (semicolonsReqired notin flags or not semicolonReq) and peek().kind == eol
       ):
         raise newMagasmError(parseError, line)
       if peek().kind == semicolon and peek(1).kind == eol:
@@ -447,23 +466,21 @@ proc parseMagasm*(code: string, flags: set[MagasmFlag]): MagasmCode =
         inc i
       
       if (let x = peek(); x.kind == word and peek(1).kind == colon):
-        if peek(2).kind != eol:
-          raise newMagasmError(parseError, line)
         r.statement = Statement(kind: label, label: x.word)
-        inc i, 3
-        inc line
-        result.add r
-        continue
+        inc i, 2
+        newline false
 
       if (let x = peek(); x.kind == word and x.word.len == 3):
-        block a:
-          for f in Function.nop..Function.ech:
-            if x.word == $f:
-              r.statement = Statement(kind: functionCall, ) # todo
-              break a
-          # todo: custom functions
         inc i
-        # todo: args
+        block a:
+          case x.word
+          of "ech":
+            if peek().kind != str: raise newMagasmError(parseError, line)
+            r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: ech, ech: peek().str))
+            inc i
+          # todo
+          else:
+            ## todo: custom functions
         newline
       
       if (
@@ -512,17 +529,26 @@ proc parseMagasm*(code: string, flags: set[MagasmFlag]): MagasmCode =
 
       result.add r
       while peek().kind != eol: inc i
+      inc line
       inc i
   
   code.tokenize.parse
 
-echo parseMagasm(
-"""
-start:
-+ if1:
-  a = 1
-- if1:
-  a = -1
-""",
-  {reg2, reg4, negativeNumbers, floatNumbers, advancedOperators, basicOperators}
-)
+
+when isMainModule:
+  let flags = {reg2, reg4, negativeNumbers, floatNumbers, advancedOperators, basicOperators}
+  var vm = MagasmVmInstance(
+    flags: flags,
+    code: parseMagasm(flags=flags, code="""
+        ->a
+      + a:
+        ech + a:
+      a:
+        ech a:
+    """)
+  )
+  echo vm.code
+  echo vm.step
+  echo vm.step
+  echo vm.step
+  echo vm.step
