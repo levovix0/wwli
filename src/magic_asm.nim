@@ -1,5 +1,5 @@
-import tables, unicode, strutils, options
-import fusion/matching
+import tables, unicode, strutils, options, macros
+import fusion/matching, fusion/astdsl
 
 {.experimental: "overloadableEnums".}
 {.experimental: "caseStmtMacros".}
@@ -430,8 +430,10 @@ proc parseMagasm*(code: string, flags: set[MagasmFlag]): MagasmCode =
       of word(word: @a is (len: 1)):
         Register(size: r16, reg: a[0])
       of word(word: @a is (len: 2)):
+        if reg2 notin flags: raise newMagasmError(parseError, line)
         Register(size: r32, reg2: [a[0], a[1]])
       of word(word: @a is (len: 4)):
+        if reg4 notin flags: raise newMagasmError(parseError, line)
         Register(size: r64, reg4: [a[0], a[1], a[2], a[3]])
       else: raise newMagasmError(parseError, line)
     
@@ -473,14 +475,54 @@ proc parseMagasm*(code: string, flags: set[MagasmFlag]): MagasmCode =
       if (let x = peek(); x.kind == word and x.word.len == 3):
         inc i
         block a:
-          case x.word
-          of "ech":
+          if x.word == "ech":
             if peek().kind != str: raise newMagasmError(parseError, line)
             r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: ech, ech: peek().str))
             inc i
-          # todo
           else:
-            ## todo: custom functions
+            proc replace(x: NimNode, a: NimNode, b: NimNode): NimNode =
+              if x == a: return b
+              result = copyNimNode x
+              for x in x:
+                result.add x.replace(a, b)
+
+            macro handle(w: string, r: FunctionCall, body, bodyElse: untyped) =
+              buildAst caseStmt:
+                w
+                for x in Function.nop..<Function.ech:
+                  ofBranch newLit $x:
+                    whenStmt:
+                      elifBranch:
+                        call bindSym"compiles":
+                          dotExpr(r, ident $x)
+                        stmtList:
+                          body
+                            .replace(ident"V", buildAst(call(bindSym"typeof", dotExpr(r, ident $x))))
+                            .replace(ident"fnc", ident $x)
+                Else:
+                  bodyElse
+
+            proc read(t: type): t =
+              when t is string:
+                if peek().kind != word: raise newMagasmError(parseError, line)
+                result = peek().word
+                inc i
+              elif t is Register:
+                if peek().kind != word: raise newMagasmError(parseError, line)
+                result = peek().toRegister
+                inc i
+              elif t is IntOrReg:
+                if peek().kind != word and peek().kind != num: raise newMagasmError(parseError, line)
+                result = peek().toIntOrReg
+                inc i
+              elif t is tuple:
+                for x in result.fields:
+                  x = read(typeof(x))
+
+            handle x.word, r.statement.functionCall:
+              r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: fnc, fnc: read(V)))
+            do:
+              ## todo: custom functions
         newline
       
       if (
@@ -539,16 +581,26 @@ when isMainModule:
   let flags = {reg2, reg4, negativeNumbers, floatNumbers, advancedOperators, basicOperators}
   var vm = MagasmVmInstance(
     flags: flags,
+    ports: {
+      'A': (
+        read: proc: int64 {.closure.} =
+          3,
+        write: proc(v: int64) {.closure.} =
+          echo $v
+      ),
+    }.toTable,
+    memory: {
+      'a': 0'i16,
+      'b': 0'i16,
+    }.toTable,
     code: parseMagasm(flags=flags, code="""
-        ->a
-      + a:
-        ech + a:
-      a:
-        ech a:
+        a = A
+        b = 2
+        A = ab
     """)
   )
   echo vm.code
   echo vm.step
   echo vm.step
   echo vm.step
-  echo vm.step
+  echo vm.memory
