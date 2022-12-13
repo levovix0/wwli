@@ -154,16 +154,16 @@ proc step*(vm: var MagasmVmInstance): StepResult =
       if reg.Rune.isLower:
         vm.memory[reg].int64
       else:
-        vm.ports[reg].read().int64
+        vm.ports[reg].read()
 
     except KeyError:
       raise newMagasmError(invalidAddress, vm.i, getCurrentException())
 
   proc `[]`(vm: MagasmVmInstance, reg: array[2, char]): int64 =
-    vm[reg[0]] + vm[reg[1]] shl 8
+    vm[reg[0]] + vm[reg[1]] shl 16
 
   proc `[]`(vm: MagasmVmInstance, reg: array[4, char]): int64 =
-    vm[reg[0]] + vm[reg[1]] shl 8 + vm[reg[2]] shl 16 + vm[reg[3]] shl 24
+    vm[reg[0]] + vm[reg[1]] shl 16 + vm[reg[2]] shl 32 + vm[reg[3]] shl 48
 
 
   proc `[]`(vm: MagasmVmInstance, x: Register): int64 =
@@ -180,22 +180,20 @@ proc step*(vm: var MagasmVmInstance): StepResult =
   proc `[]=`(vm: var MagasmVmInstance, reg: char, v: int64) =
     try:
       if reg.Rune.isLower:
-        vm.memory[reg] = v.int16
+        vm.memory[reg] = (v and 0xffff).int16
       else:
-        vm.ports[reg].write(v.int16)
+        vm.ports[reg].write(v)
 
     except KeyError:
       raise newMagasmError(invalidAddress, vm.i, getCurrentException())
 
   proc `[]=`(vm: var MagasmVmInstance, reg: array[2, char], v: int64) =
-      vm[reg[0]] = v
-      vm[reg[1]] = v shr 8
+      for i, c in reg:
+        vm[c] = v shr (i * 16)
 
   proc `[]=`(vm: var MagasmVmInstance, reg: array[4, char], v: int64) =
-      vm[reg[0]] = v
-      vm[reg[1]] = v shr 8
-      vm[reg[2]] = v shr 16
-      vm[reg[3]] = v shr 24
+      for i, c in reg:
+        vm[c] = v shr (i * 16)
 
 
   proc `[]=`(vm: var MagasmVmInstance, x: Register, v: int64) =
@@ -217,10 +215,25 @@ proc step*(vm: var MagasmVmInstance): StepResult =
     of none() | label() | functionCall(functionCall: nop()):
       inc vm.i
     
-    of functionCall(functionCall: slp(slp: @i)):
+    of functionCall(functionCall: slp(slp: @x)):
       ## note: builtin function
+      result = StepResult(kind: sleep, sleep: vm[x])
       inc vm.i
-      return StepResult(kind: sleep, sleep: vm[i])
+
+    of functionCall(functionCall: mov(mov: (@i, @o))):
+      ## note: builtin function
+      vm[o] = vm[i]
+      inc vm.i
+
+    of functionCall(functionCall: jmp(jmp: @l)):
+      ## note: builtin function
+      for j, x in vm.code:
+        if x.ce != no:
+          if x.ce notin vm.ce: continue
+        if x.statement.kind == label and x.statement.label == l:
+          vm.i = j
+          return
+      raise newMagasmError(invalidAddress, vm.i)
     
     # todo: of functionCall(ech(@s)):
     of functionCall(functionCall: ech(ech: @s)):
@@ -235,8 +248,8 @@ proc step*(vm: var MagasmVmInstance): StepResult =
         template st: bool = (s[i] == '{')
         template en(x): bool = (i+x < s.len and s[i+x] == '}')
         template ad(n, v) =
-          i += n
           r.add $vm[v]
+          i += n
         
         if st and alph(1) and en(2):
           ad(2, s[i+1])
@@ -249,22 +262,8 @@ proc step*(vm: var MagasmVmInstance): StepResult =
         
         inc i
 
+      result = StepResult(kind: echo, echo: r)
       inc vm.i
-      return StepResult(kind: echo, echo: r)
-
-    of functionCall(functionCall: mov(mov: (@i, @o))):
-      ## note: builtin function
-      vm[o] = vm[i]
-      inc vm.i
-    
-    of functionCall(functionCall: jmp(jmp: @l)):
-      for j, x in vm.code:
-        if x.ce != no:
-          if x.ce notin vm.ce: continue
-        if x.statement.kind == label and x.statement.label == l:
-          vm.i = j
-          return
-      raise newMagasmError(invalidAddress, vm.i)
   
   except MagasmError:
     inc vm.i
@@ -584,7 +583,7 @@ when isMainModule:
     ports: {
       'A': (
         read: proc: int64 {.closure.} =
-          3,
+          131075,
         write: proc(v: int64) {.closure.} =
           echo $v
       ),
@@ -594,13 +593,17 @@ when isMainModule:
       'b': 0'i16,
     }.toTable,
     code: parseMagasm(flags=flags, code="""
-        a = A
-        b = 2
+        ba = A
         A = ab
+        slp 1
     """)
   )
   echo vm.code
-  echo vm.step
-  echo vm.step
-  echo vm.step
+  block a:
+    for _ in 1..100:
+      let r = vm.step
+      case r
+      of ok(): discard
+      of sleep(): break a
+      else: echo r
   echo vm.memory
