@@ -24,7 +24,10 @@ type
     slp  ## "sleep", to end execution
 
     add  ## "add", add second value to first register
-    #jmo ## "jump offset", jump by X lines
+
+    jmo  ## "jump offset", jump by X lines
+    jlo  ## "jump label offset", jump to label with offset
+    
     sce  ## "set conditional execution", set ce flag to mask (1|0 + 2|0 + 4|0)
     
     ech  ## "echo", for debugging
@@ -51,14 +54,26 @@ type
 
   FunctionCall* = object
     case kind*: Function
-    of ech:
-      ech*: string
     of mov:
       mov*: tuple[i: IntOrReg, o: Register]
     of jmp:
       jmp*: string
     of slp:
       slp*: IntOrReg
+
+    of add:
+      add*: tuple[a: Register, b: IntOrReg]
+
+    of jmo:
+      jmo*: IntOrReg
+    of jlo:
+      jlo*: tuple[l: string, o: IntOrReg]
+
+    of sce:
+      sce*: IntOrReg
+
+    of ech:
+      ech*: string
     else:
       args*: seq[IntOrReg]
 
@@ -203,22 +218,33 @@ proc step*(vm: var MagasmVmInstance): StepResult =
     of r64: vm[x.reg4] = v
 
 
+  proc findLabel(vm: MagasmVmInstance, l: string): int =
+    for j, x in vm.code:
+      if x.ce != no:
+        if x.ce notin vm.ce: continue
+      if x.statement.kind == label and x.statement.label == l:
+        return j
+    raise newMagasmError(invalidAddress, vm.i)
+
+
   if vm.code.len == 0: return
   if vm.i >= vm.code.len: vm.i = 0
 
   let n = vm.code[vm.i]
   try:
     if n.ce != no:
-      if n.ce notin vm.ce: return
+      if n.ce notin vm.ce:
+        inc vm.i
+        return
+
+    template makeSureVmHasFunction(x: Function) =
+      if x notin vm.functions:
+        raise newMagasmError(invalidFunction, vm.i)
 
     case n.statement
     of none() | label() | functionCall(functionCall: nop()):
       inc vm.i
-    
-    of functionCall(functionCall: slp(slp: @x)):
-      ## note: builtin function
-      result = StepResult(kind: sleep, sleep: vm[x])
-      inc vm.i
+
 
     of functionCall(functionCall: mov(mov: (@i, @o))):
       ## note: builtin function
@@ -227,14 +253,38 @@ proc step*(vm: var MagasmVmInstance): StepResult =
 
     of functionCall(functionCall: jmp(jmp: @l)):
       ## note: builtin function
-      for j, x in vm.code:
-        if x.ce != no:
-          if x.ce notin vm.ce: continue
-        if x.statement.kind == label and x.statement.label == l:
-          vm.i = j
-          return
-      raise newMagasmError(invalidAddress, vm.i)
+      vm.i = vm.findLabel(l) + 1
     
+    of functionCall(functionCall: slp(slp: @x)):
+      ## note: builtin function
+      result = StepResult(kind: sleep, sleep: vm[x])
+      inc vm.i
+
+
+    of functionCall(functionCall: add(add: (@a, @b))):
+      makeSureVmHasFunction add
+      vm[a] = vm[a] + vm[b]
+      inc vm.i
+
+
+    of functionCall(functionCall: jmo(jmo: @o)):
+      makeSureVmHasFunction jmo
+      vm.i = vm.i + vm[o].int
+
+    of functionCall(functionCall: jlo(jlo: (@l, @o))):
+      makeSureVmHasFunction jlo
+      vm.i = vm.findLabel(l) + vm[o].int
+
+
+    of functionCall(functionCall: sce(sce: @x)):
+      makeSureVmHasFunction sce
+      let mask = vm[x]
+      vm.ce = {}
+      if ((mask and 0x1) == 0x1): vm.ce.incl true
+      if ((mask and 0x2) == 0x2): vm.ce.incl false
+      if ((mask and 0x4) == 0x4): vm.ce.incl error
+      inc vm.i
+
     # todo: of functionCall(ech(@s)):
     of functionCall(functionCall: ech(ech: @s)):
       ## note: builtin function
@@ -264,7 +314,8 @@ proc step*(vm: var MagasmVmInstance): StepResult =
 
       result = StepResult(kind: echo, echo: r)
       inc vm.i
-  
+
+
   except MagasmError:
     inc vm.i
     if errorHandling notin vm.flags:
@@ -501,7 +552,7 @@ proc parseMagasm*(code: string, flags: set[MagasmFlag]): MagasmCode =
                 Else:
                   bodyElse
 
-            proc read(t: type): t =
+            proc read(t: type, line: int): t =
               when t is string:
                 if peek().kind != word: raise newMagasmError(parseError, line)
                 result = peek().word
@@ -516,10 +567,10 @@ proc parseMagasm*(code: string, flags: set[MagasmFlag]): MagasmCode =
                 inc i
               elif t is tuple:
                 for x in result.fields:
-                  x = read(typeof(x))
+                  x = read(typeof(x), line)
 
             handle x.word, r.statement.functionCall:
-              r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: fnc, fnc: read(V)))
+              r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: fnc, fnc: read(V, line)))
             do:
               ## todo: custom functions
         newline
@@ -580,10 +631,15 @@ when isMainModule:
   let flags = {reg2, reg4, negativeNumbers, floatNumbers, advancedOperators, basicOperators}
   var vm = MagasmVmInstance(
     flags: flags,
+    functions: block:
+      var x: set[Function.add..Function.sce]
+      for f in Function.add..Function.sce:
+        x.incl f
+      x,
     ports: {
       'A': (
         read: proc: int64 {.closure.} =
-          131075,
+          0,
         write: proc(v: int64) {.closure.} =
           echo $v
       ),
@@ -593,9 +649,21 @@ when isMainModule:
       'b': 0'i16,
     }.toTable,
     code: parseMagasm(flags=flags, code="""
-        ba = A
-        A = ab
-        slp 1
+      start:
+        A = 0
+      + A = 1
+      - jmo 3
+      + sce 2
+      - jlo start 2
+      - A = 2
+      * jmo 3
+      - sce 4
+      * jlo start 2
+      + A = 3
+      * A = 4
+      * sce 0
+        sce 1
+        jlo start 2
     """)
   )
   echo vm.code

@@ -1,6 +1,6 @@
-import ospaths
+# import ospaths
 
-switch("nimcache", ".nimcache"/hostOS/hostCPU)
+# switch("nimcache", ".nimcache"/hostOS/hostCPU)
 --stylecheck:off
 
 when defined(macosx):
