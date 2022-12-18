@@ -1,5 +1,5 @@
-import tables, unicode, strutils, options, macros
-import fusion/matching, fusion/astdsl
+import tables, unicode, strutils, options, macros, math
+import hmatching, fusion/astdsl
 
 {.experimental: "overloadableEnums".}
 {.experimental: "caseStmtMacros".}
@@ -24,6 +24,12 @@ type
     slp  ## "sleep", to end execution
 
     add  ## "add", add second value to first register
+    sub  ## "sub", a -= b
+    mul  ## "mul", a *= b
+    `div`  ## "div", a /= b
+    `mod`  ## "mod", a %= b
+    pow  ## "pow", a ^= b
+    rot  ## "root", a = pow(a, 1/b)
 
     jmo  ## "jump offset", jump by X lines
     jlo  ## "jump label offset", jump to label with offset
@@ -63,6 +69,18 @@ type
 
     of add:
       add*: tuple[a: Register, b: IntOrReg]
+    of sub:
+      sub*: tuple[a: Register, b: IntOrReg]
+    of mul:
+      mul*: tuple[a: Register, b: IntOrReg]
+    of `div`:
+      `div`*: tuple[a: Register, b: IntOrReg]
+    of `mod`:
+      `mod`*: tuple[a: Register, b: IntOrReg]
+    of pow:
+      pow*: tuple[a: Register, b: IntOrReg]
+    of rot:
+      rot*: tuple[a: Register, b: IntOrReg]
 
     of jmo:
       jmo*: IntOrReg
@@ -99,6 +117,7 @@ type
     invalidAddress = "invalid port/memory/instruction address"
     invalidFunction = "invalid function"
     parseError = "parse error"
+    divisionByZero = "division by 0"
 
   MagasmError* = object of CatchableError
     kind: MagasmErrorKind
@@ -114,6 +133,8 @@ type
     semicolonsReqired
     basicOperators
     advancedOperators
+    autoRoundFloats
+    divisionByZeroError
     customOperators  ## todo
     customFunctions  ## todo
 
@@ -265,6 +286,51 @@ proc step*(vm: var MagasmVmInstance): StepResult =
       makeSureVmHasFunction add
       vm[a] = vm[a] + vm[b]
       inc vm.i
+    
+    of functionCall(functionCall: sub(sub: (@a, @b))):
+      makeSureVmHasFunction sub
+      vm[a] = vm[a] - vm[b]
+      inc vm.i
+    
+    of functionCall(functionCall: mul(mul: (@a, @b))):
+      makeSureVmHasFunction mul
+      vm[a] = vm[a] * vm[b]
+      inc vm.i
+    
+    of functionCall(functionCall: `div`(`div`: (@a, @b))):
+      makeSureVmHasFunction `div`
+      let c = vm[b]
+      if c == 0:
+        if divisionByZeroError in vm.flags:
+          raise newMagasmError(divisionByZero, vm.i)
+        else:
+          vm[a] = 0
+      else:
+        vm[a] = vm[a] div vm[b]
+      inc vm.i
+    
+    of functionCall(functionCall: `mod`(`mod`: (@a, @b))):
+      makeSureVmHasFunction `mod`
+      let c = vm[b]
+      if c == 0:
+        if divisionByZeroError in vm.flags:
+          raise newMagasmError(divisionByZero, vm.i)
+      else:
+        vm[a] = vm[a] mod vm[b]
+      inc vm.i
+    
+    of functionCall(functionCall: pow(pow: (@a, @b))):
+      makeSureVmHasFunction pow
+      vm[a] = vm[a] ^ vm[b]
+      inc vm.i
+    
+    of functionCall(functionCall: rot(rot: (@a, @b))):
+      makeSureVmHasFunction rot
+      if autoRoundFloats in vm.flags:
+        vm[a] = pow(vm[a].float, 1 / vm[b].float).round.int64
+      else:
+        vm[a] = pow(vm[a].float, 1 / vm[b].float).int64
+      inc vm.i
 
 
     of functionCall(functionCall: jmo(jmo: @o)):
@@ -315,6 +381,8 @@ proc step*(vm: var MagasmVmInstance): StepResult =
       result = StepResult(kind: echo, echo: r)
       inc vm.i
 
+    of functionCall(functionCall: (kind: @x)):
+      raise newMagasmError(invalidFunction, vm.i)
 
   except MagasmError:
     inc vm.i
@@ -628,7 +696,7 @@ proc parseMagasm*(code: string, flags: set[MagasmFlag]): MagasmCode =
 
 
 when isMainModule:
-  let flags = {reg2, reg4, negativeNumbers, floatNumbers, advancedOperators, basicOperators}
+  let flags = {reg2, reg4, negativeNumbers, floatNumbers, advancedOperators, basicOperators, autoRoundFloats}
   var vm = MagasmVmInstance(
     flags: flags,
     functions: block:
@@ -639,7 +707,7 @@ when isMainModule:
     ports: {
       'A': (
         read: proc: int64 {.closure.} =
-          0,
+          stdin.readLine.parseInt,
         write: proc(v: int64) {.closure.} =
           echo $v
       ),
@@ -647,23 +715,32 @@ when isMainModule:
     memory: {
       'a': 0'i16,
       'b': 0'i16,
+      'c': 0'i16,
     }.toTable,
     code: parseMagasm(flags=flags, code="""
-      start:
-        A = 0
-      + A = 1
-      - jmo 3
-      + sce 2
-      - jlo start 2
-      - A = 2
-      * jmo 3
-      - sce 4
-      * jlo start 2
-      + A = 3
-      * A = 4
-      * sce 0
-        sce 1
-        jlo start 2
+      ab = AA
+      c = a
+      add c b
+      A = c
+      c = a
+      sub c b
+      A = c
+      c = a
+      mul c b
+      A = c
+      c = a
+      div c b
+      A = c
+      c = a
+      mod c b
+      A = c
+      c = a
+      pow c b
+      A = c
+      c = a
+      rot c b
+      A = c
+      slp 1
     """)
   )
   echo vm.code
