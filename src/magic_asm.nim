@@ -33,6 +33,9 @@ type
 
     jmo  ## "jump offset", jump by X lines
     jlo  ## "jump label offset", jump to label with offset
+
+    cal  ## "call", pushes instruction pointer and jumps to label
+    ret  ## "return", pops instruction pointer
     
     sce  ## "set conditional execution", set ce flag to mask (1|0 + 2|0 + 4|0)
     
@@ -87,6 +90,11 @@ type
     of jlo:
       jlo*: tuple[l: string, o: IntOrReg]
 
+    of cal:
+      cal*: string
+    of ret:
+      ret*: tuple[]
+
     of sce:
       sce*: IntOrReg
 
@@ -118,6 +126,8 @@ type
     invalidFunction = "invalid function"
     parseError = "parse error"
     divisionByZero = "division by 0"
+    recursionLimit = "recursion limit"
+    rangeError = "range error"
 
   MagasmError* = object of CatchableError
     kind: MagasmErrorKind
@@ -144,14 +154,19 @@ type
     functions*: set[Function]
     code*: MagasmCode
     flags*: set[MagasmFlag]
+    recursionLimit: int
 
   MagasmVmInstance* = object
     memory*: Table[char, int16]
+    
     ports*: Table[char, tuple[read: proc: int64, write: proc(v: int64)]]
     functions*: set[Function.add..Function.sce]
     code*: MagasmCode
     flags*: set[MagasmFlag]
+    recursionLimit: int
+
     i*: int  ## instruction pointer
+    istack*: seq[int]  ## instruction pointer stack
     err*: Option[tuple[e: MagasmError, stepsPassed: int]]  ## last error
     ce*: set[ConditionalExecution.true..ConditionalExecution.error]
   
@@ -355,6 +370,20 @@ proc step*(vm: var MagasmVmInstance): StepResult =
     of functionCall(functionCall: jlo(jlo: (@l, @o))):
       makeSureVmHasFunction jlo
       vm.i = vm.findLabel(l) + vm[o].int
+
+
+    of functionCall(functionCall: cal(cal: @l)):
+      makeSureVmHasFunction cal
+      if vm.istack.len >= vm.recursionLimit:
+        raise newMagasmError(recursionLimit, vm.i)
+      vm.istack.add vm.i
+      vm.i = vm.findLabel(l) + 1
+    
+    of functionCall(functionCall: ret()):
+      makeSureVmHasFunction ret
+      if vm.istack.len == 0:
+        raise newMagasmError(rangeError, vm.i)
+      vm.i = vm.istack.pop + 1
 
 
     of functionCall(functionCall: sce(sce: @x)):
@@ -732,30 +761,29 @@ when isMainModule:
       'b': 0'i16,
       'c': 0'i16,
     }.toTable,
+    recursionLimit: 50,
     code: parseMagasm(flags=flags, code="""
       ab = AA
       c = a
       add c b
-      A = c
-      c = a
+      cal out
       sub c b
-      A = c
-      c = a
+      cal out
       mul c b
-      A = c
-      c = a
+      cal out
       div c b
-      A = c
-      c = a
+      cal out
       mod c b
-      A = c
-      c = a
+      cal out
       pow c b
+      cal out
+      rot c b
+      cal out
+      slp 1
+    out:
       A = c
       c = a
-      rot c b
-      A = c
-      slp 1
+      ret
     """)
   )
   echo vm.code
