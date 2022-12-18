@@ -188,7 +188,7 @@ proc step*(vm: var MagasmVmInstance): StepResult =
   proc `[]`(vm: MagasmVmInstance, reg: char): int64 =
     try:
       if reg.Rune.isLower:
-        vm.memory[reg].int64
+        cast[int64](vm.memory[reg])
       else:
         vm.ports[reg].read()
 
@@ -196,10 +196,21 @@ proc step*(vm: var MagasmVmInstance): StepResult =
       raise newMagasmError(invalidAddress, vm.i, getCurrentException())
 
   proc `[]`(vm: MagasmVmInstance, reg: array[2, char]): int64 =
-    vm[reg[0]] + vm[reg[1]] shl 16
+    let
+      a = vm[reg[0]]
+      b = vm[reg[1]]
+    if b < 0:  # negative number
+      cast[int64]([cast[int16](a), cast[int16](b), -1, -1])
+    else:
+      cast[int64]([cast[int16](a), cast[int16](b), 0, 0])
 
   proc `[]`(vm: MagasmVmInstance, reg: array[4, char]): int64 =
-    vm[reg[0]] + vm[reg[1]] shl 16 + vm[reg[2]] shl 32 + vm[reg[3]] shl 48
+    let
+      a = vm[reg[0]]
+      b = vm[reg[1]]
+      c = vm[reg[2]]
+      d = vm[reg[3]]
+    cast[int64]([cast[int16](a), cast[int16](b), cast[int16](c), cast[int16](d)])
 
 
   proc `[]`(vm: MagasmVmInstance, x: Register): int64 =
@@ -216,7 +227,7 @@ proc step*(vm: var MagasmVmInstance): StepResult =
   proc `[]=`(vm: var MagasmVmInstance, reg: char, v: int64) =
     try:
       if reg.Rune.isLower:
-        vm.memory[reg] = (v and 0xffff).int16
+        vm.memory[reg] = cast[int16](v and 0xffff)
       else:
         vm.ports[reg].write(v)
 
@@ -224,12 +235,12 @@ proc step*(vm: var MagasmVmInstance): StepResult =
       raise newMagasmError(invalidAddress, vm.i, getCurrentException())
 
   proc `[]=`(vm: var MagasmVmInstance, reg: array[2, char], v: int64) =
-      for i, c in reg:
-        vm[c] = v shr (i * 16)
+    for i, c in reg:
+      vm[c] = v shr (i * 16)
 
   proc `[]=`(vm: var MagasmVmInstance, reg: array[4, char], v: int64) =
-      for i, c in reg:
-        vm[c] = v shr (i * 16)
+    for i, c in reg:
+      vm[c] = v shr (i * 16)
 
 
   proc `[]=`(vm: var MagasmVmInstance, x: Register, v: int64) =
@@ -306,7 +317,7 @@ proc step*(vm: var MagasmVmInstance): StepResult =
         else:
           vm[a] = 0
       else:
-        vm[a] = vm[a] div vm[b]
+        vm[a] = vm[a] div c
       inc vm.i
     
     of functionCall(functionCall: `mod`(`mod`: (@a, @b))):
@@ -316,12 +327,16 @@ proc step*(vm: var MagasmVmInstance): StepResult =
         if divisionByZeroError in vm.flags:
           raise newMagasmError(divisionByZero, vm.i)
       else:
-        vm[a] = vm[a] mod vm[b]
+        vm[a] = vm[a] mod c
       inc vm.i
     
     of functionCall(functionCall: pow(pow: (@a, @b))):
       makeSureVmHasFunction pow
-      vm[a] = vm[a] ^ vm[b]
+      let c = vm[b]
+      if c < 0:
+        vm[a] = 0
+      else:
+        vm[a] = vm[a] ^ c
       inc vm.i
     
     of functionCall(functionCall: rot(rot: (@a, @b))):
