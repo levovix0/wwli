@@ -527,7 +527,7 @@ proc parseMagasm*(code: string, flags: set[MagasmFlag]): MagasmCode =
         var r = ""
         while true:
           let x = peek()
-          if x notin "+-*/!=$%&><|":
+          if x notin "+-*/!=$%&^|<>()[]{}":
             break
           r.add x
           skip()
@@ -554,7 +554,7 @@ proc parseMagasm*(code: string, flags: set[MagasmFlag]): MagasmCode =
 
       elif c == '-' and (negativeNumbers in flags) and (peek(1) in '0'..'9'):
         parseNumber
-      elif c in "+-*/!=$%&><|":
+      elif c in "+-*/!=$%&^|<>()[]{}":
         parseOp
 
       elif c == ';':
@@ -634,6 +634,20 @@ proc parseMagasm*(code: string, flags: set[MagasmFlag]): MagasmCode =
         inc i, 2
         newline false
 
+      if (
+        let
+          a = peek(0)
+          o = peek(1)
+        o.kind == op and o.op == "()" and a.kind == word
+      ):
+        if basicOperators in flags:
+          r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: cal, cal: a.word))
+        else:
+          raise newMagasmError(parseError, line)
+        
+        inc i, 2
+        newline
+
       if (let x = peek(); x.kind == word and x.word.len == 3):
         inc i
         block a:
@@ -696,12 +710,32 @@ proc parseMagasm*(code: string, flags: set[MagasmFlag]): MagasmCode =
         ((a.kind == word and a.word.len in [1, 2, 4]) or a.kind == num) and
         ((b.kind == word and b.word.len in [1, 2, 4]) or b.kind == num)
       ):
-        if basicOperators in flags and o.op in ["="]:
+        if basicOperators in flags and o.op in ["=", "+=", "-=", "*=", "/=", "%=", "^=", ")="]:
           case o.op
           of "=":
-            if a.kind == num:
-              raise newMagasmError(parseError, line)
+            if a.kind == num: raise newMagasmError(parseError, line)
             r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: mov, mov: (b.toIntOrReg, a.toRegister)))
+          of "+=":
+            if a.kind == num: raise newMagasmError(parseError, line)
+            r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: add, add: (a.toRegister, b.toIntOrReg)))
+          of "-=":
+            if a.kind == num: raise newMagasmError(parseError, line)
+            r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: sub, sub: (a.toRegister, b.toIntOrReg)))
+          of "*=":
+            if a.kind == num: raise newMagasmError(parseError, line)
+            r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: mul, mul: (a.toRegister, b.toIntOrReg)))
+          of "/=":
+            if a.kind == num: raise newMagasmError(parseError, line)
+            r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: `div`, `div`: (a.toRegister, b.toIntOrReg)))
+          of "%=":
+            if a.kind == num: raise newMagasmError(parseError, line)
+            r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: `mod`, `mod`: (a.toRegister, b.toIntOrReg)))
+          of "^=":
+            if a.kind == num: raise newMagasmError(parseError, line)
+            r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: pow, pow: (a.toRegister, b.toIntOrReg)))
+          of ")=":
+            if a.kind == num: raise newMagasmError(parseError, line)
+            r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: rot, rot: (a.toRegister, b.toIntOrReg)))
           # insert new binary operators here
         else:
           raise newMagasmError(parseError, line)
@@ -765,20 +799,20 @@ when isMainModule:
     code: parseMagasm(flags=flags, code="""
       ab = AA
       c = a
-      add c b
-      cal out
-      sub c b
-      cal out
-      mul c b
-      cal out
-      div c b
-      cal out
-      mod c b
-      cal out
-      pow c b
-      cal out
-      rot c b
-      cal out
+      c += b
+      out()
+      c -= b
+      out()
+      c *= b
+      out()
+      c /= b
+      out()
+      c %= b
+      out()
+      c ^= b
+      out()
+      c )= b
+      out()
       slp 1
     out:
       A = c
