@@ -34,6 +34,13 @@ type
     jmo  ## "jump offset", jump by X lines
     jlo  ## "jump label offset", jump to label with offset
 
+    ceq  ## "compare equal", if a == b, sets ce to +, else to -, do not touch *
+    cne  ## "compare not equal", if a != b, sets ce to +, else to -, do not touch *
+    clt  ## "compare less than", if a < b, sets ce to +, else to -, do not touch *
+    cgt  ## "compare greater than", if a > b, sets ce to +, else to -, do not touch *
+    cle  ## "compare less or equal", if a >= b, sets ce to +, else to -, do not touch *
+    cge  ## "compare greater or equal", if a <= b, sets ce to +, else to -, do not touch *
+
     cal  ## "call", pushes instruction pointer and jumps to label
     ret  ## "return", pops instruction pointer
     
@@ -89,6 +96,19 @@ type
       jmo*: IntOrReg
     of jlo:
       jlo*: tuple[l: string, o: IntOrReg]
+
+    of ceq:
+      ceq*: tuple[a, b: IntOrReg]
+    of cne:
+      cne*: tuple[a, b: IntOrReg]
+    of clt:
+      clt*: tuple[a, b: IntOrReg]
+    of cgt:
+      cgt*: tuple[a, b: IntOrReg]
+    of cle:
+      cle*: tuple[a, b: IntOrReg]
+    of cge:
+      cge*: tuple[a, b: IntOrReg]
 
     of cal:
       cal*: string
@@ -288,6 +308,15 @@ proc step*(vm: var MagasmVmInstance): StepResult =
       if x notin vm.functions:
         raise newMagasmError(invalidFunction, vm.i)
 
+    template setCond(x: bool) =
+      if x:
+        vm.ce.incl true
+        vm.ce.excl false
+      else:
+        vm.ce.excl true
+        vm.ce.incl false
+      inc vm.i
+
     case n.statement
     of none() | label() | functionCall(functionCall: nop()):
       inc vm.i
@@ -370,6 +399,31 @@ proc step*(vm: var MagasmVmInstance): StepResult =
     of functionCall(functionCall: jlo(jlo: (@l, @o))):
       makeSureVmHasFunction jlo
       vm.i = vm.findLabel(l) + vm[o].int
+
+
+    of functionCall(functionCall: ceq(ceq: (@a, @b))):
+      makeSureVmHasFunction ceq
+      setCond vm[a] == vm[b]
+
+    of functionCall(functionCall: cne(cne: (@a, @b))):
+      makeSureVmHasFunction cne
+      setCond vm[a] != vm[b]
+
+    of functionCall(functionCall: clt(clt: (@a, @b))):
+      makeSureVmHasFunction clt
+      setCond vm[a] < vm[b]
+
+    of functionCall(functionCall: cgt(cgt: (@a, @b))):
+      makeSureVmHasFunction cgt
+      setCond vm[a] > vm[b]
+
+    of functionCall(functionCall: cle(cle: (@a, @b))):
+      makeSureVmHasFunction cle
+      setCond vm[a] <= vm[b]
+
+    of functionCall(functionCall: cge(cge: (@a, @b))):
+      makeSureVmHasFunction cge
+      setCond vm[a] >= vm[b]
 
 
     of functionCall(functionCall: cal(cal: @l)):
@@ -710,7 +764,8 @@ proc parseMagasm*(code: string, flags: set[MagasmFlag]): MagasmCode =
         ((a.kind == word and a.word.len in [1, 2, 4]) or a.kind == num) and
         ((b.kind == word and b.word.len in [1, 2, 4]) or b.kind == num)
       ):
-        if basicOperators in flags and o.op in ["=", "+=", "-=", "*=", "/=", "%=", "^=", ")="]:
+        # todo: macros
+        if basicOperators in flags and o.op in ["=", "+=", "-=", "*=", "/=", "%=", "^=", ")=", "==", "!=", ">", "<", ">=", "<="]:
           case o.op
           of "=":
             if a.kind == num: raise newMagasmError(parseError, line)
@@ -736,6 +791,18 @@ proc parseMagasm*(code: string, flags: set[MagasmFlag]): MagasmCode =
           of ")=":
             if a.kind == num: raise newMagasmError(parseError, line)
             r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: rot, rot: (a.toRegister, b.toIntOrReg)))
+          of "==":
+            r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: ceq, ceq: (a.toIntOrReg, b.toIntOrReg)))
+          of "!=":
+            r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: cne, cne: (a.toIntOrReg, b.toIntOrReg)))
+          of "<":
+            r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: clt, clt: (a.toIntOrReg, b.toIntOrReg)))
+          of ">":
+            r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: cgt, cgt: (a.toIntOrReg, b.toIntOrReg)))
+          of ">=":
+            r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: cle, cle: (a.toIntOrReg, b.toIntOrReg)))
+          of "<=":
+            r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: cge, cge: (a.toIntOrReg, b.toIntOrReg)))
           # insert new binary operators here
         else:
           raise newMagasmError(parseError, line)
@@ -793,31 +860,13 @@ when isMainModule:
     memory: {
       'a': 0'i16,
       'b': 0'i16,
-      'c': 0'i16,
     }.toTable,
     recursionLimit: 50,
     code: parseMagasm(flags=flags, code="""
-      ab = AA
-      c = a
-      c += b
-      out()
-      c -= b
-      out()
-      c *= b
-      out()
-      c /= b
-      out()
-      c %= b
-      out()
-      c ^= b
-      out()
-      c )= b
-      out()
+      A > 5
+    + ech true
+    - ech false
       slp 1
-    out:
-      A = c
-      c = a
-      ret
     """)
   )
   echo vm.code
