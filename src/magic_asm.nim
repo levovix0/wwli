@@ -549,19 +549,20 @@ proc parseMagasm*(
       else: discard
   
   proc tokenize(code: string): seq[Token] =
+    let code = code.toRunes
     var i = 0
     var line = 0
     var isString: bool
     
-    proc peek(delta=0): char =
+    proc peek(delta=0): Rune =
       if i + delta < code.len:
         code[i + delta]
       else:
-        '\0'
+        "\0".runeAt(0)
     
-    proc next(delta=0): char =
+    proc next(delta=0): Rune =
       for i in i .. min(i+delta, code.high):
-        if code[i] == '\n':
+        if code[i] == "\n".runeAt(0):
           inc line
           isString = false
       i += delta
@@ -569,11 +570,11 @@ proc parseMagasm*(
       if i < code.len:
         code[i]
       else:
-        '\0'
+        "\0".runeAt(0)
     
     proc skip(n=1) =
       for i in i ..< min(i+n, code.len):
-        if code[i] == '\n':
+        if code[i] == "\n".runeAt(0):
           inc line
           isString = false
       i += n
@@ -585,7 +586,7 @@ proc parseMagasm*(
         var r = ""
         while true:
           let x = peek()
-          if not(x in '0'..'9' or (floatNumbers in flags and x == '.') or (negativeNumbers in flags and x == '-')):
+          if x.size != 1 or not(($x)[0] in '0'..'9' or (floatNumbers in flags and x == ".".runeAt(0)) or (negativeNumbers in flags and x == "-".runeAt(0))):
             break
           r.add x
           skip()
@@ -598,7 +599,7 @@ proc parseMagasm*(
         var r = ""
         while true:
           let x = peek()
-          if not(x in 'a'..'z' or x in 'A'..'Z'):
+          if not(x.isAlpha) and c != "_".runeAt(0):
             break
           r.add x
           skip()
@@ -611,7 +612,7 @@ proc parseMagasm*(
         var r = ""
         while true:
           let x = peek()
-          if x notin "+-*/!=$%&^|<>()[]{}":
+          if x.size != 1 or ($x)[0] notin "+-*/!=$%&^|<>()[]{}":
             break
           r.add x
           skip()
@@ -621,7 +622,7 @@ proc parseMagasm*(
         var r = ""
         while true:
           let x = next()
-          if x == '\n': break
+          if x == "\n".runeAt(0): break
           r.add x
         result.add Token(kind: str, str: r)
         result.add Token(kind: eol)
@@ -630,33 +631,33 @@ proc parseMagasm*(
       if isString:
         parseString
 
-      elif c in '0'..'9':
+      elif c.size == 1 and ($c)[0] in '0'..'9':
         parseNumber
 
-      elif (c in 'a'..'z') or (c in 'A'..'Z'):
+      elif c.isAlpha or c == "_".runeAt(0):
         parseWord
 
-      elif c == '-' and (negativeNumbers in flags) and (peek(1) in '0'..'9'):
+      elif (negativeNumbers in flags) and c.size == 1 and ($c)[0] == '-' and (peek(1).size == 1 and ($peek(1))[0] in '0'..'9'):
         parseNumber
-      elif c in "+-*/!=$%&^|<>()[]{}":
+      elif c.size == 1 and ($c)[0] in "+-*/!=$%&^|<>()[]{}":
         parseOp
 
-      elif c == ';':
+      elif c == ";".runeAt(0):
         result.add Token(kind: semicolon)
-        while next() != '\n': discard
+        while next() != "\n".runeAt(0): discard
         result.add Token(kind: eol)
 
-      elif c in {'\n', '\0'}:
+      elif c in ["\n".runeAt(0), "\0".runeAt(0)]:
         result.add Token(kind: eol)
         inc line
         isString = false
         inc i
 
-      elif c == ':':
+      elif c == ":".runeAt(0):
         result.add Token(kind: colon)
         inc i
 
-      elif c notin " \r\t":
+      elif not c.isWhiteSpace:
         raise newMagasmError(parseError, line)
 
       else:
@@ -846,10 +847,11 @@ when isMainModule:
     code: parseMagasm(
       flags=flags,
       code="""
-        A > 5
-      + ech true
-      - ech false
+        лол()
         slp 1
+      лол:
+        ech кек
+        ret
       """,
       unaryOperators={
         "-=": "neg",
