@@ -180,6 +180,7 @@ type
     memory*: seq[char]
     ports*: Table[char, tuple[read: proc: int64, write: proc(v: int64)]]
     functions*: set[Function.add..Function.sce]
+    customFunctions*: Table[string, proc(vm: var MagasmVmInstance, args: seq[IntOrReg])]
     code*: MagasmCode
     flags*: set[MagasmFlag]
     recursionLimit: int
@@ -189,6 +190,7 @@ type
     
     ports*: Table[char, tuple[read: proc: int64, write: proc(v: int64)]]
     functions*: set[Function.add..Function.sce]
+    customFunctions*: Table[string, proc(vm: var MagasmVmInstance, args: seq[IntOrReg])]
     code*: MagasmCode
     flags*: set[MagasmFlag]
     recursionLimit: int
@@ -227,81 +229,80 @@ proc newMagasmError(kind: MagasmErrorKind, line: int, parent: ref Exception = ni
   (ref MagasmError)(kind: kind, msg: "line " & $line & ": " & $kind, line: line, parent: parent)
 
 
-proc step*(vm: var MagasmVmInstance): StepResult =
-  proc `[]`(vm: MagasmVmInstance, reg: char): int64 =
-    try:
-      if reg.Rune.isLower:
-        cast[int64](vm.memory[reg])
-      else:
-        vm.ports[reg].read()
-
-    except KeyError:
-      raise newMagasmError(invalidAddress, vm.i, getCurrentException())
-
-  proc `[]`(vm: MagasmVmInstance, reg: array[2, char]): int64 =
-    let
-      a = vm[reg[0]]
-      b = vm[reg[1]]
-    if b < 0:  # negative number
-      cast[int64]([cast[int16](a), cast[int16](b), -1, -1])
+proc `[]`*(vm: MagasmVmInstance, reg: char): int64 =
+  try:
+    if reg.Rune.isLower:
+      cast[int64](vm.memory[reg])
     else:
-      cast[int64]([cast[int16](a), cast[int16](b), 0, 0])
+      vm.ports[reg].read()
 
-  proc `[]`(vm: MagasmVmInstance, reg: array[4, char]): int64 =
-    let
-      a = vm[reg[0]]
-      b = vm[reg[1]]
-      c = vm[reg[2]]
-      d = vm[reg[3]]
-    cast[int64]([cast[int16](a), cast[int16](b), cast[int16](c), cast[int16](d)])
+  except KeyError:
+    raise newMagasmError(invalidAddress, vm.i, getCurrentException())
 
+proc `[]`*(vm: MagasmVmInstance, reg: array[2, char]): int64 =
+  let
+    a = vm[reg[0]]
+    b = vm[reg[1]]
+  if b < 0:  # negative number
+    cast[int64]([cast[int16](a), cast[int16](b), -1, -1])
+  else:
+    cast[int64]([cast[int16](a), cast[int16](b), 0, 0])
 
-  proc `[]`(vm: MagasmVmInstance, x: Register): int64 =
-    case x.size
-    of r16: vm[x.reg]
-    of r32: vm[x.reg2]
-    of r64: vm[x.reg4]
-
-  proc `[]`(vm: MagasmVmInstance, x: IntOrReg): int64 =
-    if x.isReg == true: vm[x.reg]
-    else: x.i
-  
-
-  proc `[]=`(vm: var MagasmVmInstance, reg: char, v: int64) =
-    try:
-      if reg.Rune.isLower:
-        vm.memory[reg] = cast[int16](v and 0xffff)
-      else:
-        vm.ports[reg].write(v)
-
-    except KeyError:
-      raise newMagasmError(invalidAddress, vm.i, getCurrentException())
-
-  proc `[]=`(vm: var MagasmVmInstance, reg: array[2, char], v: int64) =
-    for i, c in reg:
-      vm[c] = v shr (i * 16)
-
-  proc `[]=`(vm: var MagasmVmInstance, reg: array[4, char], v: int64) =
-    for i, c in reg:
-      vm[c] = v shr (i * 16)
+proc `[]`*(vm: MagasmVmInstance, reg: array[4, char]): int64 =
+  let
+    a = vm[reg[0]]
+    b = vm[reg[1]]
+    c = vm[reg[2]]
+    d = vm[reg[3]]
+  cast[int64]([cast[int16](a), cast[int16](b), cast[int16](c), cast[int16](d)])
 
 
-  proc `[]=`(vm: var MagasmVmInstance, x: Register, v: int64) =
-    case x.size
-    of r16: vm[x.reg] = v
-    of r32: vm[x.reg2] = v
-    of r64: vm[x.reg4] = v
+proc `[]`*(vm: MagasmVmInstance, x: Register): int64 =
+  case x.size
+  of r16: vm[x.reg]
+  of r32: vm[x.reg2]
+  of r64: vm[x.reg4]
+
+proc `[]`*(vm: MagasmVmInstance, x: IntOrReg): int64 =
+  if x.isReg == true: vm[x.reg]
+  else: x.i
 
 
-  proc findLabel(vm: MagasmVmInstance, l: string): int =
-    for j, x in vm.code:
-      if x.ce != no:
-        if x.ce notin vm.ce: continue
-      if x.statement.kind == label and x.statement.label == l:
-        return j
-    raise newMagasmError(invalidAddress, vm.i)
+proc `[]=`*(vm: var MagasmVmInstance, reg: char, v: int64) =
+  try:
+    if reg.Rune.isLower:
+      vm.memory[reg] = cast[int16](v and 0xffff)
+    else:
+      vm.ports[reg].write(v)
+
+  except KeyError:
+    raise newMagasmError(invalidAddress, vm.i, getCurrentException())
+
+proc `[]=`*(vm: var MagasmVmInstance, reg: array[2, char], v: int64) =
+  for i, c in reg:
+    vm[c] = v shr (i * 16)
+
+proc `[]=`*(vm: var MagasmVmInstance, reg: array[4, char], v: int64) =
+  for i, c in reg:
+    vm[c] = v shr (i * 16)
 
 
+proc `[]=`*(vm: var MagasmVmInstance, x: Register, v: int64) =
+  case x.size
+  of r16: vm[x.reg] = v
+  of r32: vm[x.reg2] = v
+  of r64: vm[x.reg4] = v
+
+
+proc findLabel*(vm: MagasmVmInstance, l: string): int =
+  for j, x in vm.code:
+    if x.ce != no:
+      if x.ce notin vm.ce: continue
+    if x.statement.kind == label and x.statement.label == l:
+      return j
+  raise newMagasmError(invalidAddress, vm.i)
+
+proc step*(vm: var MagasmVmInstance): StepResult =
   defer:
     if vm.err.isSome:
       vm.ce.incl error
@@ -500,8 +501,10 @@ proc step*(vm: var MagasmVmInstance): StepResult =
       inc vm.i
     
     of functionCall(functionCall: custom(custom: (@name, @args))):
-      ## todo
-      raise newMagasmError(invalidFunction, vm.i)
+      try:
+        vm.customFunctions[name](vm, args)
+      except KeyError:
+        raise newMagasmError(invalidFunction, vm.i)
 
     of functionCall(functionCall: (kind: @x)):
       raise newMagasmError(invalidFunction, vm.i)
@@ -811,7 +814,10 @@ proc parseMagasm*(
             handle x.word, r.statement.functionCall:
               r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: fnc, fnc: read(V, line)))
             do:
-              ## todo: custom functions
+              var args: seq[IntOrReg]
+              while peek().kind notin {semicolon, eol}:
+                args.add read(IntOrReg, line)
+              r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: custom, custom: (x.word, args)))
         newline
       
       result.add r
@@ -831,6 +837,14 @@ when isMainModule:
       for f in Function.add..Function.sce:
         x.incl f
       x,
+    customFunctions: {
+      "mut": proc(vm: var MagasmVmInstance, args: seq[IntOrReg]) {.closure.} =
+        defer: inc vm.i
+        if args.len < 1: return
+        let i = vm[args[0]]
+        if i notin 0..vm.code.high: return
+        vm.code[i] = StatementCe(statement: Statement(kind: functionCall, functionCall: FunctionCall(kind: slp, slp: IntOrReg(isReg: false, i: 1))))
+    }.toTable,
     ports: {
       'A': (
         read: proc: int64 {.closure.} =
@@ -847,11 +861,9 @@ when isMainModule:
     code: parseMagasm(
       flags=flags,
       code="""
-        лол()
-        slp 1
-      лол:
-        ech кек
-        ret
+          ech ~~~
+          1!
+          ech hellloo
       """,
       unaryOperators={
         "-=": "neg",
@@ -859,6 +871,7 @@ when isMainModule:
       }.toTable,
       postfixUnaryOperators={
         "()": "cal",
+        "!": "mut",
       }.toTable,
       binaryOperators={
         "=": ("mov", system.true),
