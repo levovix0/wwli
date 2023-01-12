@@ -1,4 +1,4 @@
-import tables, unicode, strutils, options, macros, math
+import tables, unicode, strutils, options, macros, math, sets
 import hmatching, fusion/astdsl
 
 {.experimental: "overloadableEnums".}
@@ -31,6 +31,8 @@ type
     pow  ## "pow", a ^= b
     rot  ## "root", a = pow(a, 1/b)
 
+    neg  ## "negative", a = -a
+
     jmo  ## "jump offset", jump by X lines
     jlo  ## "jump label offset", jump to label with offset
 
@@ -47,6 +49,9 @@ type
     sce  ## "set conditional execution", set ce flag to mask (1|0 + 2|0 + 4|0)
     
     ech  ## "echo", for debugging
+
+    custom  ## costom function from mod or player
+
 
   RegisterSize* = enum
     r16
@@ -91,6 +96,9 @@ type
       pow*: tuple[a: Register, b: IntOrReg]
     of rot:
       rot*: tuple[a: Register, b: IntOrReg]
+    
+    of neg:
+      neg*: Register
 
     of jmo:
       jmo*: IntOrReg
@@ -120,6 +128,10 @@ type
 
     of ech:
       ech*: string
+    
+    of custom:
+      custom*: tuple[name: string, args: seq[IntOrReg]]
+
     else:
       args*: seq[IntOrReg]
 
@@ -161,17 +173,13 @@ type
     reg2
     reg4
     semicolonsReqired
-    basicOperators
-    advancedOperators
     autoRoundFloats
     divisionByZeroError
-    customOperators  ## todo
-    customFunctions  ## todo
 
   MagasmVm* = object
     memory*: seq[char]
     ports*: Table[char, tuple[read: proc: int64, write: proc(v: int64)]]
-    functions*: set[Function]
+    functions*: set[Function.add..Function.sce]
     code*: MagasmCode
     flags*: set[MagasmFlag]
     recursionLimit: int
@@ -294,6 +302,12 @@ proc step*(vm: var MagasmVmInstance): StepResult =
     raise newMagasmError(invalidAddress, vm.i)
 
 
+  defer:
+    if vm.err.isSome:
+      vm.ce.incl error
+    else:
+      vm.ce.excl error
+
   if vm.code.len == 0: return
   if vm.i >= vm.code.len: vm.i = 0
 
@@ -392,6 +406,12 @@ proc step*(vm: var MagasmVmInstance): StepResult =
       inc vm.i
 
 
+    of functionCall(functionCall: neg(neg: @a)):
+      makeSureVmHasFunction neg
+      vm[a] = -vm[a]
+      inc vm.i
+
+
     of functionCall(functionCall: jmo(jmo: @o)):
       makeSureVmHasFunction jmo
       vm.i = vm.i + vm[o].int
@@ -478,6 +498,10 @@ proc step*(vm: var MagasmVmInstance): StepResult =
 
       result = StepResult(kind: echo, echo: r)
       inc vm.i
+    
+    of functionCall(functionCall: custom(custom: (@name, @args))):
+      ## todo
+      raise newMagasmError(invalidFunction, vm.i)
 
     of functionCall(functionCall: (kind: @x)):
       raise newMagasmError(invalidFunction, vm.i)
@@ -495,7 +519,13 @@ proc step*(vm: var MagasmVmInstance): StepResult =
       vm.err = some (((ref MagasmError)getCurrentException())[], 0)
 
 
-proc parseMagasm*(code: string, flags: set[MagasmFlag]): MagasmCode =
+proc parseMagasm*(
+  code: string,
+  flags: set[MagasmFlag],
+  unaryOperators: Table[string, string],
+  postfixUnaryOperators: Table[string, string],
+  binaryOperators: Table[string, tuple[f: string, reversed: bool]]
+): MagasmCode =
   type
     TokenKind = enum
       eol
@@ -688,21 +718,49 @@ proc parseMagasm*(code: string, flags: set[MagasmFlag]): MagasmCode =
         inc i, 2
         newline false
 
-      if (
-        let
-          a = peek(0)
-          o = peek(1)
-        o.kind == op and o.op == "()" and a.kind == word
-      ):
-        if basicOperators in flags:
-          r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: cal, cal: a.word))
+      if (let (a, o, b) = (peek(0), peek(1), peek(2)); o.kind == op and b.kind notin {eol, colon, semicolon, op}):
+        if o.op in binaryOperators:
+          try:
+            let (op, rev) = binaryOperators[o.op]
+            if rev:
+              r.statement = parse(@[Token(kind: word, word: op), b, a])[0].statement
+            else:
+              r.statement = parse(@[Token(kind: word, word: op), a, b])[0].statement
+          except:
+            raise newMagasmError(parseError, line)
+        else:
+          raise newMagasmError(parseError, line)
+        
+        inc i, 3
+        newline
+
+      if (let (a, o) = (peek(0), peek(1)); o.kind == op):
+        if o.op in postfixUnaryOperators:
+          try:
+            let op = postfixUnaryOperators[o.op]
+            r.statement = parse(@[Token(kind: word, word: op), a])[0].statement
+          except:
+            raise newMagasmError(parseError, line)
         else:
           raise newMagasmError(parseError, line)
         
         inc i, 2
         newline
 
-      if (let x = peek(); x.kind == word and x.word.len == 3):
+      if (let (o, a) = (peek(0), peek(1)); o.kind == op):
+        if o.op in unaryOperators:
+          try:
+            let op = unaryOperators[o.op]
+            r.statement = parse(@[Token(kind: word, word: op), a])[0].statement
+          except:
+            raise newMagasmError(parseError, line)
+        else:
+          raise newMagasmError(parseError, line)
+        
+        inc i, 2
+        newline
+
+      if (let x = peek(); x.kind == word):
         inc i
         block a:
           if x.word == "ech":
@@ -755,83 +813,6 @@ proc parseMagasm*(code: string, flags: set[MagasmFlag]): MagasmCode =
               ## todo: custom functions
         newline
       
-      if (
-        let
-          a = peek(0)
-          o = peek(1)
-          b = peek(2)
-        o.kind == op and
-        ((a.kind == word and a.word.len in [1, 2, 4]) or a.kind == num) and
-        ((b.kind == word and b.word.len in [1, 2, 4]) or b.kind == num)
-      ):
-        # todo: macros
-        if basicOperators in flags and o.op in ["=", "+=", "-=", "*=", "/=", "%=", "^=", ")=", "==", "!=", ">", "<", ">=", "<="]:
-          case o.op
-          of "=":
-            if a.kind == num: raise newMagasmError(parseError, line)
-            r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: mov, mov: (b.toIntOrReg, a.toRegister)))
-          of "+=":
-            if a.kind == num: raise newMagasmError(parseError, line)
-            r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: add, add: (a.toRegister, b.toIntOrReg)))
-          of "-=":
-            if a.kind == num: raise newMagasmError(parseError, line)
-            r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: sub, sub: (a.toRegister, b.toIntOrReg)))
-          of "*=":
-            if a.kind == num: raise newMagasmError(parseError, line)
-            r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: mul, mul: (a.toRegister, b.toIntOrReg)))
-          of "/=":
-            if a.kind == num: raise newMagasmError(parseError, line)
-            r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: `div`, `div`: (a.toRegister, b.toIntOrReg)))
-          of "%=":
-            if a.kind == num: raise newMagasmError(parseError, line)
-            r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: `mod`, `mod`: (a.toRegister, b.toIntOrReg)))
-          of "^=":
-            if a.kind == num: raise newMagasmError(parseError, line)
-            r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: pow, pow: (a.toRegister, b.toIntOrReg)))
-          of ")=":
-            if a.kind == num: raise newMagasmError(parseError, line)
-            r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: rot, rot: (a.toRegister, b.toIntOrReg)))
-          of "==":
-            r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: ceq, ceq: (a.toIntOrReg, b.toIntOrReg)))
-          of "!=":
-            r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: cne, cne: (a.toIntOrReg, b.toIntOrReg)))
-          of "<":
-            r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: clt, clt: (a.toIntOrReg, b.toIntOrReg)))
-          of ">":
-            r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: cgt, cgt: (a.toIntOrReg, b.toIntOrReg)))
-          of ">=":
-            r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: cle, cle: (a.toIntOrReg, b.toIntOrReg)))
-          of "<=":
-            r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: cge, cge: (a.toIntOrReg, b.toIntOrReg)))
-          # insert new binary operators here
-        else:
-          raise newMagasmError(parseError, line)
-        
-        inc i, 3
-        newline
-      
-      if (
-        let
-          o = peek(1)
-          a = peek(2)
-        o.kind == op and
-        ((a.kind == word and a.word.len in [1, 2, 4]) or a.kind == num)
-      ):
-        if basicOperators in flags and o.op in [""]:
-          case o.op
-          # insert new unary operators here
-          else: discard
-        else:
-          raise newMagasmError(parseError, line)
-        
-        inc i, 2
-        newline
-      
-      if advancedOperators in flags and peek().kind == op and peek().op == "->" and peek(1).kind == word:
-        r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: jmp, jmp: peek(1).word))
-        inc i, 2
-        newline
-
       result.add r
       while peek().kind != eol: inc i
       inc line
@@ -841,7 +822,7 @@ proc parseMagasm*(code: string, flags: set[MagasmFlag]): MagasmCode =
 
 
 when isMainModule:
-  let flags = {reg2, reg4, negativeNumbers, floatNumbers, advancedOperators, basicOperators, autoRoundFloats}
+  let flags = {reg2, reg4, negativeNumbers, floatNumbers, autoRoundFloats}
   var vm = MagasmVmInstance(
     flags: flags,
     functions: block:
@@ -862,12 +843,38 @@ when isMainModule:
       'b': 0'i16,
     }.toTable,
     recursionLimit: 50,
-    code: parseMagasm(flags=flags, code="""
-      A > 5
-    + ech true
-    - ech false
-      slp 1
-    """)
+    code: parseMagasm(
+      flags=flags,
+      code="""
+        A > 5
+      + ech true
+      - ech false
+        slp 1
+      """,
+      unaryOperators={
+        "-=": "neg",
+        "->": "jmp",
+      }.toTable,
+      postfixUnaryOperators={
+        "()": "cal",
+      }.toTable,
+      binaryOperators={
+        "=": ("mov", system.true),
+        "+=": ("add", system.false),
+        "-=": ("sub", system.false),
+        "*=": ("mul", system.false),
+        "/=": ("div", system.false),
+        "%=": ("mod", system.false),
+        "^=": ("pow", system.false),
+        ")=": ("rot", system.false),
+        "==": ("ceq", system.false),
+        "!=": ("cne", system.false),
+        "<": ("clt", system.false),
+        ">": ("cgt", system.false),
+        "<=": ("cle", system.false),
+        ">=": ("cge", system.false),
+      }.toTable,
+    )
   )
   echo vm.code
   block a:
