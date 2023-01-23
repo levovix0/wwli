@@ -46,7 +46,13 @@ type
     cal  ## "call", pushes instruction pointer and jumps to label
     ret  ## "return", pops instruction pointer
     
-    sce  ## "set conditional execution", set ce flag to mask (1|0 + 2|0 + 4|0)
+    sce  ## "set conditional execution", set vm.ce flag to mask (1|0 + 2|0 + 4|0)
+    gce  ## "get conditional execution", get vm.ce flag to mask (1|0 + 2|0 + 4|0)
+
+    sip  ## "set instruction pointer", set vm.i (and bound it to low..high)
+    gip  ## "get instruction pointer", get vm.i
+    pui  ## "push instruction pointer", pushes vm.i to vm.istack
+    poi  ## "pop instruction pointer", pops vm.i from vm.istack (and store it to reg)
     
     ech  ## "echo", for debugging
 
@@ -125,6 +131,17 @@ type
 
     of sce:
       sce*: IntOrReg
+    of gce:
+      gce*: Register
+    
+    of sip:
+      sip*: IntOrReg
+    of gip:
+      gip*: Register
+    of pui:
+      pui*: IntOrReg
+    of poi:
+      poi*: Register
 
     of ech:
       ech*: string
@@ -177,9 +194,9 @@ type
     divisionByZeroError
 
   MagasmVm* = object
-    memory*: seq[char]
+    memory*: set[char]
     ports*: Table[char, tuple[read: proc: int64, write: proc(v: int64)]]
-    functions*: set[Function.add..Function.sce]
+    functions*: set[Function.add..Function.poi]
     customFunctions*: Table[string, proc(vm: var MagasmVmInstance, args: seq[IntOrReg])]
     code*: MagasmCode
     flags*: set[MagasmFlag]
@@ -189,7 +206,7 @@ type
     memory*: Table[char, int16]
     
     ports*: Table[char, tuple[read: proc: int64, write: proc(v: int64)]]
-    functions*: set[Function.add..Function.sce]
+    functions*: set[Function.add..Function.poi]
     customFunctions*: Table[string, proc(vm: var MagasmVmInstance, args: seq[IntOrReg])]
     code*: MagasmCode
     flags*: set[MagasmFlag]
@@ -231,7 +248,9 @@ proc newMagasmError(kind: MagasmErrorKind, line: int, parent: ref Exception = ni
 
 proc `[]`*(vm: MagasmVmInstance, reg: char): int64 =
   try:
-    if reg.Rune.isLower:
+    if reg == '_':
+      0'i64
+    elif reg.Rune.isLower:
       cast[int64](vm.memory[reg])
     else:
       vm.ports[reg].read()
@@ -270,7 +289,9 @@ proc `[]`*(vm: MagasmVmInstance, x: IntOrReg): int64 =
 
 proc `[]=`*(vm: var MagasmVmInstance, reg: char, v: int64) =
   try:
-    if reg.Rune.isLower:
+    if reg == '_':
+      discard
+    elif reg.Rune.isLower:
       vm.memory[reg] = cast[int16](v and 0xffff)
     else:
       vm.ports[reg].write(v)
@@ -469,6 +490,36 @@ proc step*(vm: var MagasmVmInstance): StepResult =
       if ((mask and 0x2) == 0x2): vm.ce.incl false
       if ((mask and 0x4) == 0x4): vm.ce.incl error
       inc vm.i
+    
+    of functionCall(functionCall: gce(gce: @x)):
+      makeSureVmHasFunction gce
+      var mask: int64
+      if true in vm.ce: mask += 0x1
+      if false in vm.ce: mask += 0x2
+      if error in vm.ce: mask += 0x4
+      vm[x] = mask
+      inc vm.i
+    
+
+    of functionCall(functionCall: sip(sip: @x)):
+      makeSureVmHasFunction sip
+      vm.i = vm[x].max(vm.code.low).min(vm.code.high).int
+      inc vm.i
+    
+    of functionCall(functionCall: gip(gip: @x)):
+      makeSureVmHasFunction gip
+      vm[x] = vm.i
+    
+    of functionCall(functionCall: pui(pui: @x)):
+      makeSureVmHasFunction pui
+      vm.istack.add vm[x].int
+      inc vm.i
+    
+    of functionCall(functionCall: poi(poi: @x)):
+      makeSureVmHasFunction poi
+      vm[x] = vm.istack.pop
+      inc vm.i
+
 
     # todo: of functionCall(ech(@s)):
     of functionCall(functionCall: ech(ech: @s)):
@@ -602,7 +653,7 @@ proc parseMagasm*(
         var r = ""
         while true:
           let x = peek()
-          if not(x.isAlpha) and c != "_".runeAt(0):
+          if not(x.isAlpha) and x != "_".runeAt(0):
             break
           r.add x
           skip()
@@ -828,13 +879,26 @@ proc parseMagasm*(
   code.tokenize.parse
 
 
+proc instance*(vm: MagasmVm): MagasmVmInstance =
+  for x in vm.memory:
+    result.memory[x] = 0
+  result.ports = vm.ports
+  result.functions = vm.functions
+  result.customFunctions = vm.customFunctions
+  result.code = vm.code
+  result.flags = vm.flags
+  result.recursionLimit = vm.recursionLimit
+
+
 when isMainModule:
+  import terminal
+
   let flags = {reg2, reg4, negativeNumbers, floatNumbers, autoRoundFloats}
-  var vm = MagasmVmInstance(
+  var vm = MagasmVm(
     flags: flags,
     functions: block:
-      var x: set[Function.add..Function.sce]
-      for f in Function.add..Function.sce:
+      var x: set[Function.add..Function.poi]
+      for f in Function.add..Function.poi:
         x.incl f
       x,
     customFunctions: {
@@ -853,17 +917,24 @@ when isMainModule:
           echo $v
       ),
     }.toTable,
-    memory: {
-      'a': 0'i16,
-      'b': 0'i16,
-    }.toTable,
+    memory: {'a', 'b'},
     recursionLimit: 50,
     code: parseMagasm(
       flags=flags,
       code="""
-          ech ~~~
-          1!
-          ech hellloo
+        a = 5
+        factorial()
+        A = b
+        slp 1
+
+        factorial:  ; args: a (x), result: b (factorial of x), tmpvars: a
+          b = 1
+        factorial_cycle:
+          a <= 1
+        + ret
+          b *= a
+          a -= 1
+          jmp factorial_cycle
       """,
       unaryOperators={
         "-=": "neg",
@@ -890,8 +961,8 @@ when isMainModule:
         ">=": ("cge", system.false),
       }.toTable,
     )
-  )
-  echo vm.code
+  ).instance
+  stdout.styledWrite(fgBlue, $vm.code & "\n\n")
   block a:
     for _ in 1..100:
       let r = vm.step
@@ -899,4 +970,4 @@ when isMainModule:
       of ok(): discard
       of sleep(): break a
       else: echo r
-  echo vm.memory
+  stdout.styledWrite(fgBlue, "\n" & $vm.memory & "\n")
