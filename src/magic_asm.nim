@@ -204,6 +204,7 @@ type
     autoRoundFloats
     divisionByZeroError
     advancedCallOperator
+    autoFrames
 
   MagasmVm* = object
     memory*: set[char]
@@ -365,6 +366,21 @@ proc step*(vm: var MagasmVmInstance): StepResult =
         vm.ce.excl true
         vm.ce.incl false
       inc vm.i
+    
+    proc puf(vm: var MagasmVmInstance, vars: seq[Register]) =
+      makeSureVmHasFunction puf
+      var frame: seq[tuple[reg: Register, val: int64]]
+      for r in vars:
+        frame.add (r, vm[r])
+      vm.fstack.add frame
+
+    proc pof(vm: var MagasmVmInstance) =
+      makeSureVmHasFunction pof
+      if vm.fstack.len == 0:
+        raise newMagasmError(rangeError, vm.i)
+      let frame = vm.fstack.pop
+      for (r, v) in frame:
+        vm[r] = v
 
     case n.statement
     of none() | label() | functionCall(functionCall: nop()):
@@ -483,6 +499,8 @@ proc step*(vm: var MagasmVmInstance): StepResult =
 
     of functionCall(functionCall: cal(cal: @l)):
       makeSureVmHasFunction cal
+      if autoFrames in vm.flags:
+        vm.puf(@[])
       if vm.istack.len >= vm.recursionLimit:
         raise newMagasmError(recursionLimit, vm.i)
       vm.istack.add vm.i
@@ -490,26 +508,19 @@ proc step*(vm: var MagasmVmInstance): StepResult =
     
     of functionCall(functionCall: ret()):
       makeSureVmHasFunction ret
+      if autoFrames in vm.flags:
+        pof vm
       if vm.istack.len == 0:
         raise newMagasmError(rangeError, vm.i)
       vm.i = vm.istack.pop + 1
 
 
     of functionCall(functionCall: puf(puf: @vars)):
-      makeSureVmHasFunction puf
-      var frame: seq[tuple[reg: Register, val: int64]]
-      for r in vars:
-        frame.add (r, vm[r])
-      vm.fstack.add frame
+      vm.puf(vars)
       inc vm.i
     
     of functionCall(functionCall: pof()):
-      makeSureVmHasFunction pof
-      if vm.fstack.len == 0:
-        raise newMagasmError(rangeError, vm.i)
-      let frame = vm.fstack.pop
-      for (r, v) in frame:
-        vm[r] = v
+      pof vm
       inc vm.i
 
 
@@ -597,6 +608,8 @@ proc step*(vm: var MagasmVmInstance): StepResult =
 
     of advancedCall(advancedCall: (label: @l, args: @args)):
       makeSureVmHasFunction cal
+      if autoFrames in vm.flags:
+        vm.puf(args.mapit(it.arg))
       for (a, v) in args:
         vm[a] = vm[v]
       if vm.istack.len >= vm.recursionLimit:
@@ -960,7 +973,7 @@ proc instance*(vm: MagasmVm): MagasmVmInstance =
 when isMainModule:
   import terminal
 
-  let flags = {reg2, reg4, negativeNumbers, floatNumbers, autoRoundFloats, advancedCallOperator}
+  let flags = {reg2, reg4, negativeNumbers, floatNumbers, autoRoundFloats, advancedCallOperator, autoFrames}
   var vm = MagasmVm(
     flags: flags,
     functions: block:
@@ -989,7 +1002,6 @@ when isMainModule:
     code: parseMagasm(
       flags=flags,
       code="""
-        puf a
         factorial(a=5)
         A = b
         slp 1
@@ -998,7 +1010,6 @@ when isMainModule:
           b = 1
         factorial_cycle:
           a <= 1
-        + pof
         + ret
           b *= a
           a -= 1
