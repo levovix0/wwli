@@ -1,4 +1,4 @@
-import tables, unicode, strutils, options, macros, math, sets
+import tables, unicode, strutils, options, macros, math, sets, sequtils
 import hmatching, fusion/astdsl
 
 {.experimental: "overloadableEnums".}
@@ -46,6 +46,9 @@ type
 
     cal  ## "call", pushes instruction pointer and jumps to label
     ret  ## "return", pops instruction pointer
+
+    puf  ## "push frame", pushes value of specified variables to stack
+    pof  ## "pop frame", pops value of some variables from stack
     
     sce  ## "set conditional execution", set vm.ce flag to mask (1|0 + 2|0 + 4|0)
     gce  ## "get conditional execution", get vm.ce flag to mask (1|0 + 2|0 + 4|0)
@@ -129,6 +132,11 @@ type
       cal*: string
     of ret:
       ret*: tuple[]
+
+    of puf:
+      puf*: seq[Register]
+    of pof:
+      pof*: tuple[]
 
     of sce:
       sce*: IntOrReg
@@ -218,6 +226,7 @@ type
 
     i*: int  ## instruction pointer
     istack*: seq[int]  ## instruction pointer stack
+    fstack*: seq[seq[tuple[reg: Register, val: int64]]]  ## frame stack
     err*: Option[tuple[e: MagasmError, stepsPassed: int]]  ## last error
     ce*: set[ConditionalExecution.true..ConditionalExecution.error]
   
@@ -486,6 +495,24 @@ proc step*(vm: var MagasmVmInstance): StepResult =
       vm.i = vm.istack.pop + 1
 
 
+    of functionCall(functionCall: puf(puf: @vars)):
+      makeSureVmHasFunction puf
+      var frame: seq[tuple[reg: Register, val: int64]]
+      for r in vars:
+        frame.add (r, vm[r])
+      vm.fstack.add frame
+      inc vm.i
+    
+    of functionCall(functionCall: pof()):
+      makeSureVmHasFunction pof
+      if vm.fstack.len == 0:
+        raise newMagasmError(rangeError, vm.i)
+      let frame = vm.fstack.pop
+      for (r, v) in frame:
+        vm[r] = v
+      inc vm.i
+
+
     of functionCall(functionCall: sce(sce: @x)):
       makeSureVmHasFunction sce
       let mask = vm[x]
@@ -521,6 +548,8 @@ proc step*(vm: var MagasmVmInstance): StepResult =
     
     of functionCall(functionCall: poi(poi: @x)):
       makeSureVmHasFunction poi
+      if vm.istack.len == 0:
+        raise newMagasmError(rangeError, vm.i)
       vm[x] = vm.istack.pop
       inc vm.i
 
@@ -561,9 +590,11 @@ proc step*(vm: var MagasmVmInstance): StepResult =
       except KeyError:
         raise newMagasmError(invalidFunction, vm.i)
 
+
     of functionCall(functionCall: (kind: @x)):
       raise newMagasmError(invalidFunction, vm.i)
   
+
     of advancedCall(advancedCall: (label: @l, args: @args)):
       makeSureVmHasFunction cal
       for (a, v) in args:
@@ -894,6 +925,9 @@ proc parseMagasm*(
               elif t is tuple:
                 for x in result.fields:
                   x = read(typeof(x), line)
+              elif t is seq:
+                while peek().kind != eol:
+                  result.add read(typeof(result[0]), line)
 
             handle x.word, r.statement.functionCall:
               r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: fnc, fnc: read(V, line)))
@@ -955,14 +989,16 @@ when isMainModule:
     code: parseMagasm(
       flags=flags,
       code="""
+        puf a
         factorial(a=5)
         A = b
         slp 1
 
-        factorial:  ; args: a (x), result: b (factorial of x), tmpvars: a
+        factorial:  ; args: a (x), result: b (factorial of x)
           b = 1
         factorial_cycle:
           a <= 1
+        + pof
         + ret
           b *= a
           a -= 1
