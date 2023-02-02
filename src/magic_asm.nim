@@ -10,6 +10,7 @@ type
     none
     label
     functionCall
+    advancedCall
   
   ConditionalExecution* = enum
     no
@@ -159,6 +160,8 @@ type
       label*: string
     of functionCall:
       functionCall*: FunctionCall
+    of advancedCall:
+      advancedCall*: tuple[label: string, args: seq[tuple[arg: Register, val: IntOrReg]]]
 
   StatementCe* = object
     statement*: Statement
@@ -192,6 +195,7 @@ type
     semicolonsReqired
     autoRoundFloats
     divisionByZeroError
+    advancedCallOperator
 
   MagasmVm* = object
     memory*: set[char]
@@ -559,6 +563,15 @@ proc step*(vm: var MagasmVmInstance): StepResult =
 
     of functionCall(functionCall: (kind: @x)):
       raise newMagasmError(invalidFunction, vm.i)
+  
+    of advancedCall(advancedCall: (label: @l, args: @args)):
+      makeSureVmHasFunction cal
+      for (a, v) in args:
+        vm[a] = vm[v]
+      if vm.istack.len >= vm.recursionLimit:
+        raise newMagasmError(recursionLimit, vm.i)
+      vm.istack.add vm.i
+      vm.i = vm.findLabel(l) + 1
 
   except MagasmError:
     inc vm.i
@@ -757,6 +770,10 @@ proc parseMagasm*(
         IntOrReg(isReg: false, i: x.num)
       else:
         IntOrReg(isReg: true, reg: x.toRegister)
+
+    proc parseMathExpression(): IntOrReg =
+      result = peek().toIntOrReg
+      inc i
     
     while i < tokens.len:
       var r: StatementCe
@@ -772,6 +789,22 @@ proc parseMagasm*(
         r.statement = Statement(kind: label, label: x.word)
         inc i, 2
         newline false
+      
+      if (advancedCallOperator in flags) and (let (a, o) = (peek(0), peek(1)); a.kind == word and o.kind == op and o.op in ["(", "()"]):
+        var args: seq[tuple[arg: Register, val: IntOrReg]]
+        if o.op == "(":
+          inc i, 2
+          while true:
+            let a = peek(0)
+            if a.kind == op and a.op == ")":
+              inc i
+              break
+            let eq = peek(1)
+            if eq.kind != op or eq.op != "=": raise newMagasmError(parseError, line)
+            inc i, 2
+            args.add (a.toRegister, parseMathExpression())
+        r.statement = Statement(kind: advancedCall, advancedCall: (a.word, args))
+        newline
 
       if (let (a, o, b) = (peek(0), peek(1), peek(2)); o.kind == op and b.kind notin {eol, colon, semicolon, op}):
         if o.op in binaryOperators:
@@ -893,7 +926,7 @@ proc instance*(vm: MagasmVm): MagasmVmInstance =
 when isMainModule:
   import terminal
 
-  let flags = {reg2, reg4, negativeNumbers, floatNumbers, autoRoundFloats}
+  let flags = {reg2, reg4, negativeNumbers, floatNumbers, autoRoundFloats, advancedCallOperator}
   var vm = MagasmVm(
     flags: flags,
     functions: block:
@@ -922,8 +955,7 @@ when isMainModule:
     code: parseMagasm(
       flags=flags,
       code="""
-        a = 5
-        factorial()
+        factorial(a=5)
         A = b
         slp 1
 
