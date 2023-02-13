@@ -1,0 +1,39 @@
+[gd_scene load_steps=4 format=2]
+
+[ext_resource path="res://resuorces/scenes/player.tscn" type="PackedScene" id=1]
+[ext_resource path="res://resuorces/scripts/ui/tabmenu.gd" type="Script" id=2]
+
+[sub_resource type="StyleBoxFlat" id=1]
+bg_color = Color( 0.0862745, 0.0862745, 0.0862745, 0.501961 )
+corner_radius_top_left = 5
+corner_radius_top_right = 5
+corner_radius_bottom_right = 5
+corner_radius_bottom_left = 5
+
+[node name="main" type="Control"]
+anchor_right = 1.0
+anchor_bottom = 1.0
+
+[node name="player" parent="." instance=ExtResource( 1 )]
+position = Vector2( 499, 432 )
+
+[node name="floor" type="StaticBody2D" parent="."]
+
+[node name="colision" type="CollisionPolygon2D" parent="floor"]
+polygon = PoolVector2Array( -4, 433, 211, 479, 390, 469, 577, 513, 704, 401, 849, 420, 1040, 418, 1051, 635, -29, 630, -40, 426 )
+
+[node name="visual" type="Polygon2D" parent="floor"]
+polygon = PoolVector2Array( -4, 433, 211, 479, 390, 469, 577, 513, 704, 401, 849, 420, 1040, 418, 1051, 635, -29, 630, -40, 426 )
+
+[node name="tabmenu" type="Panel" parent="."]
+pause_mode = 2
+visible = false
+anchor_left = 0.1
+anchor_top = 0.1
+anchor_right = 0.7
+anchor_bottom = 0.9
+custom_styles/panel = SubResource( 1 )
+script = ExtResource( 2 )
+__meta__ = {
+"_editor_description_": ""
+}

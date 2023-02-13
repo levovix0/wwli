@@ -1,0 +1,15 @@
+[gd_scene load_steps=3 format=2]
+
+[ext_resource path="res://resuorces/sprites/player.png" type="Texture" id=1]
+[ext_resource path="res://resuorces/scripts/player/kinematic.gd" type="Script" id=2]
+
+[node name="player" type="KinematicBody2D"]
+script = ExtResource( 2 )
+
+[node name="collision" type="CollisionPolygon2D" parent="."]
+polygon = PoolVector2Array( -21, -16, -6, -29, 20, -29, 20, 5, 14, 15, 14, 21, 11, 24, 11, 27, 2, 27, 1, 23, -2, 23, -3, 27, -12, 27, -12, 24, -15, 22, -15, 16, -21, 11 )
+
+[node name="visual" type="Node2D" parent="."]
+
+[node name="sprite" type="Sprite" parent="visual"]
+texture = ExtResource( 1 )
