@@ -82,51 +82,83 @@ type
     case isReg: IsReg
     of true: reg: Register
     of false: i: int64
+  
+  UnaryExpressionKind* = enum
+    neg
+  
+  UnaryExpression* = object
+    kind*: UnaryExpressionKind
+    a*: Expression
+  
+  BinaryExpressionKind* = enum
+    add
+    sub
+    mul
+    divide
+
+  BinaryExpression* = object
+    kind*: BinaryExpressionKind
+    a*, b*: Expression
+
+  ExpressionKind* = enum
+    intOrReg
+    unary
+    binary
+
+  Expression* = ref object
+    case kind*: ExpressionKind
+    of intOrReg:
+      intOrReg*: IntOrReg
+    of unary:
+      unary*: UnaryExpression
+    of binary:
+      binary*: BinaryExpression
+
 
   FunctionCall* = object
     case kind*: Function
     of mov:
-      mov*: tuple[i: IntOrReg, o: Register]
+      mov*: tuple[i: Expression, o: Register]
     of jmp:
       jmp*: string
     of slp:
-      slp*: IntOrReg
+      slp*: Expression
 
     of add:
-      add*: tuple[a: Register, b: IntOrReg]
+      add*: tuple[a: Register, b: Expression]
     of sub:
-      sub*: tuple[a: Register, b: IntOrReg]
+      sub*: tuple[a: Register, b: Expression]
     of mul:
-      mul*: tuple[a: Register, b: IntOrReg]
+      mul*: tuple[a: Register, b: Expression]
     of `div`:
-      `div`*: tuple[a: Register, b: IntOrReg]
+      `div`*: tuple[a: Register, b: Expression]
     of `mod`:
-      `mod`*: tuple[a: Register, b: IntOrReg]
+      `mod`*: tuple[a: Register, b: Expression]
     of pow:
-      pow*: tuple[a: Register, b: IntOrReg]
+      pow*: tuple[a: Register, b: Expression]
     of rot:
-      rot*: tuple[a: Register, b: IntOrReg]
+      rot*: tuple[a: Register, b: Expression]
     
     of neg:
       neg*: Register
 
     of jmo:
-      jmo*: IntOrReg
+      jmo*: Expression
     of jlo:
-      jlo*: tuple[l: string, o: IntOrReg]
+      jlo*: tuple[l: string, o: Expression]
 
     of ceq:
-      ceq*: tuple[a, b: IntOrReg]
+      ceq*: tuple[a, b: Expression]
     of cne:
-      cne*: tuple[a, b: IntOrReg]
+      cne*: tuple[a, b: Expression]
     of clt:
-      clt*: tuple[a, b: IntOrReg]
+      clt*: tuple[a, b: Expression]
     of cgt:
-      cgt*: tuple[a, b: IntOrReg]
+      cgt*: tuple[a, b: Expression]
     of cle:
-      cle*: tuple[a, b: IntOrReg]
+      cle*: tuple[a, b: Expression]
     of cge:
-      cge*: tuple[a, b: IntOrReg]
+      cge*: tuple[a, b: Expression]
 
     of cal:
       cal*: string
@@ -139,16 +171,16 @@ type
       pof*: tuple[]
 
     of sce:
-      sce*: IntOrReg
+      sce*: Expression
     of gce:
       gce*: Register
     
     of sip:
-      sip*: IntOrReg
+      sip*: Expression
     of gip:
       gip*: Register
     of pui:
-      pui*: IntOrReg
+      pui*: Expression
     of poi:
       poi*: Register
 
@@ -156,10 +188,10 @@ type
       ech*: string
     
     of custom:
-      custom*: tuple[name: string, args: seq[IntOrReg]]
+      custom*: tuple[name: string, args: seq[Expression]]
 
     else:
-      args*: seq[IntOrReg]
+      args*: seq[Expression]
 
   Statement* = object
     case kind*: StatementKind
@@ -169,7 +201,7 @@ type
     of functionCall:
       functionCall*: FunctionCall
     of advancedCall:
-      advancedCall*: tuple[label: string, args: seq[tuple[arg: Register, val: IntOrReg]]]
+      advancedCall*: tuple[label: string, args: seq[tuple[arg: Register, val: Expression]]]
 
   StatementCe* = object
     statement*: Statement
@@ -205,12 +237,13 @@ type
     divisionByZeroError
     advancedCallOperator
     autoFrames
+    mathExpressions
 
   MagasmVm* = object
     memory*: set[char]
     ports*: Table[char, tuple[read: proc: int64, write: proc(v: int64)]]
     functions*: set[Function.add..Function.poi]
-    customFunctions*: Table[string, proc(vm: var MagasmVmInstance, args: seq[IntOrReg])]
+    customFunctions*: Table[string, proc(vm: var MagasmVmInstance, args: seq[Expression])]
     code*: MagasmCode
     flags*: set[MagasmFlag]
     recursionLimit: int
@@ -220,7 +253,7 @@ type
     
     ports*: Table[char, tuple[read: proc: int64, write: proc(v: int64)]]
     functions*: set[Function.add..Function.poi]
-    customFunctions*: Table[string, proc(vm: var MagasmVmInstance, args: seq[IntOrReg])]
+    customFunctions*: Table[string, proc(vm: var MagasmVmInstance, args: seq[Expression])]
     code*: MagasmCode
     flags*: set[MagasmFlag]
     recursionLimit: int
@@ -299,6 +332,32 @@ proc `[]`*(vm: MagasmVmInstance, x: Register): int64 =
 proc `[]`*(vm: MagasmVmInstance, x: IntOrReg): int64 =
   if x.isReg == true: vm[x.reg]
   else: x.i
+
+proc `[]`*(vm: MagasmVmInstance, x: Expression): int64 =
+  case x.kind
+  of intOrReg:
+    if x.intOrReg.isReg == true: vm[x.intOrReg.reg]
+    else: x.intOrReg.i
+  of unary:
+    case x.unary.kind
+    of neg:
+      -vm[x.unary.a]
+  of binary:
+    case x.binary.kind
+    of add:
+      vm[x.binary.a] + vm[x.binary.b]
+    of sub:
+      vm[x.binary.a] - vm[x.binary.b]
+    of mul:
+      vm[x.binary.a] * vm[x.binary.b]
+    of divide:
+      let
+        a = vm[x.binary.a]
+        b = vm[x.binary.b]
+      if b == 0:
+        if divisionByZeroError in vm.flags:
+          raise newMagasmError(divisionByZero, vm.i)
+      a div b
 
 
 proc `[]=`*(vm: var MagasmVmInstance, reg: char, v: int64) =
@@ -727,7 +786,14 @@ proc parseMagasm*(
             break
           r.add x
           skip()
-        result.add Token(kind: op, op: r)
+        if r.len > 1 and r.startsWith("(") and r != "()" and not r.endsWith(")"):
+          result.add Token(kind: op, op: "(")
+          r = r[1..^1]
+        elif r.len > 1 and r.startsWith("=") and r != "==":
+          result.add Token(kind: op, op: "=")
+          r = r[1..^1]
+        else:
+          result.add Token(kind: op, op: r)
       
       template parseString =
         var r = ""
@@ -774,7 +840,7 @@ proc parseMagasm*(
       else:
         inc i
 
-  proc parse(tokens: seq[Token]): seq[StatementCe] =
+  proc parse(tokens: seq[Token], disableOperators=system.false): seq[StatementCe] =
     var i = 0
     var line = 0
     
@@ -815,9 +881,54 @@ proc parseMagasm*(
       else:
         IntOrReg(isReg: true, reg: x.toRegister)
 
-    proc parseMathExpression(): IntOrReg =
-      result = peek().toIntOrReg
-      inc i
+    proc parseMathExpression(): Expression =
+      proc intOrReg(): Expression =
+        result = Expression(kind: intOrReg, intOrReg: peek().toIntOrReg)
+        inc i
+
+      proc braces(): Expression =
+        case peek()
+        of op(op: "("):
+          inc i
+          result = parseMathExpression()
+          case peek()
+          of op(op: ")"): discard
+          else:
+            raise newMagasmError(parseError, line)
+          inc i
+        else:
+          result = intOrReg()
+
+      proc mulDiv(): Expression =
+        let a = braces()
+        case peek(0)
+        of op(op: "*"):
+          inc i
+          let b = braces()
+          Expression(kind: binary, binary: BinaryExpression(kind: mul, a: a, b: b))
+        of op(op: "/"):
+          inc i
+          let b = braces()
+          Expression(kind: binary, binary: BinaryExpression(kind: divide, a: a, b: b))
+        else: a
+
+      proc addSub(): Expression =
+        let a = mulDiv()
+        case peek()
+        of op(op: "+"):
+          inc i
+          let b = mulDiv()
+          Expression(kind: binary, binary: BinaryExpression(kind: add, a: a, b: b))
+        of op(op: "-"):
+          inc i
+          let b = mulDiv()
+          Expression(kind: binary, binary: BinaryExpression(kind: sub, a: a, b: b))
+        else: a
+
+      if mathExpressions in flags:
+        addSub()
+      else:
+        intOrReg()
     
     while i < tokens.len:
       var r: StatementCe
@@ -834,39 +945,45 @@ proc parseMagasm*(
         inc i, 2
         newline false
       
-      if (advancedCallOperator in flags) and (let (a, o) = (peek(0), peek(1)); a.kind == word and o.kind == op and o.op in ["(", "()"]):
-        var args: seq[tuple[arg: Register, val: IntOrReg]]
-        if o.op == "(":
-          inc i, 2
-          while true:
-            let a = peek(0)
-            if a.kind == op and a.op == ")":
-              inc i
-              break
-            let eq = peek(1)
-            if eq.kind != op or eq.op != "=": raise newMagasmError(parseError, line)
+      block callFunction:
+        if not disableOperators and (advancedCallOperator in flags) and (let (a, o) = (peek(0), peek(1)); a.kind == word and o.kind == op and o.op in ["(", "()"]):
+          var args: seq[tuple[arg: Register, val: Expression]]
+          if o.op == "(":
             inc i, 2
-            args.add (a.toRegister, parseMathExpression())
-        r.statement = Statement(kind: advancedCall, advancedCall: (a.word, args))
-        newline
+            while true:
+              let a = peek(0)
+              if a.kind == op and a.op == ")":
+                inc i
+                break
+              let eq = peek(1)
+              if eq.kind != op or eq.op != "=": break callFunction  # not an error, may be math expression
+              inc i, 2
+              args.add (a.toRegister, parseMathExpression())
+          r.statement = Statement(kind: advancedCall, advancedCall: (a.word, args))
+          newline
 
-      if (let (a, o, b) = (peek(0), peek(1), peek(2)); o.kind == op and b.kind notin {eol, colon, semicolon, op}):
+      if (let (a, o, b1) = (peek(0), peek(1), peek(2)); not disableOperators and o.kind == op and b1.kind notin {eol, colon, semicolon} and o.op != "("):
+        inc i, 2
+        var b: seq[Token]
+        while peek().kind != eol:
+          b.add peek()
+          inc i
+
         if o.op in binaryOperators:
           try:
             let (op, rev) = binaryOperators[o.op]
             if rev:
-              r.statement = parse(@[Token(kind: word, word: op), b, a])[0].statement
+              r.statement = parse(@[Token(kind: word, word: op)] & b & @[a], true)[0].statement
             else:
-              r.statement = parse(@[Token(kind: word, word: op), a, b])[0].statement
+              r.statement = parse(@[Token(kind: word, word: op), a] & b, true)[0].statement
           except:
             raise newMagasmError(parseError, line)
         else:
           raise newMagasmError(parseError, line)
         
-        inc i, 3
         newline
 
-      if (let (a, o) = (peek(0), peek(1)); o.kind == op):
+      if (let (a, o) = (peek(0), peek(1)); not disableOperators and o.kind == op and o.op != "("):
         if o.op in postfixUnaryOperators:
           try:
             let op = postfixUnaryOperators[o.op]
@@ -879,7 +996,7 @@ proc parseMagasm*(
         inc i, 2
         newline
 
-      if (let (o, a) = (peek(0), peek(1)); o.kind == op):
+      if (let (o, a) = (peek(0), peek(1)); not disableOperators and o.kind == op):
         if o.op in unaryOperators:
           try:
             let op = unaryOperators[o.op]
@@ -935,6 +1052,8 @@ proc parseMagasm*(
                 if peek().kind != word and peek().kind != num: raise newMagasmError(parseError, line)
                 result = peek().toIntOrReg
                 inc i
+              elif t is Expression:
+                result = parseMathExpression()
               elif t is tuple:
                 for x in result.fields:
                   x = read(typeof(x), line)
@@ -945,9 +1064,9 @@ proc parseMagasm*(
             handle x.word, r.statement.functionCall:
               r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: fnc, fnc: read(V, line)))
             do:
-              var args: seq[IntOrReg]
+              var args: seq[Expression]
               while peek().kind notin {semicolon, eol}:
-                args.add read(IntOrReg, line)
+                args.add read(Expression, line)
               r.statement = Statement(kind: functionCall, functionCall: FunctionCall(kind: custom, custom: (x.word, args)))
         newline
       
@@ -955,7 +1074,7 @@ proc parseMagasm*(
       while peek().kind != eol: inc i
       inc line
       inc i
-  
+
   code.tokenize.parse
 
 
@@ -973,7 +1092,7 @@ proc instance*(vm: MagasmVm): MagasmVmInstance =
 when isMainModule:
   import terminal
 
-  let flags = {reg2, reg4, negativeNumbers, floatNumbers, autoRoundFloats, advancedCallOperator, autoFrames}
+  let flags = {reg2, reg4, negativeNumbers, floatNumbers, autoRoundFloats, advancedCallOperator, autoFrames, mathExpressions}
   var vm = MagasmVm(
     flags: flags,
     functions: block:
@@ -982,12 +1101,15 @@ when isMainModule:
         x.incl f
       x,
     customFunctions: {
-      "mut": proc(vm: var MagasmVmInstance, args: seq[IntOrReg]) {.closure.} =
+      "mut": proc(vm: var MagasmVmInstance, args: seq[Expression]) {.closure.} =
         defer: inc vm.i
         if args.len < 1: return
         let i = vm[args[0]]
         if i notin 0..vm.code.high: return
-        vm.code[i] = StatementCe(statement: Statement(kind: functionCall, functionCall: FunctionCall(kind: slp, slp: IntOrReg(isReg: false, i: 1))))
+        vm.code[i] = StatementCe(statement: Statement(
+          kind: functionCall,
+          functionCall: FunctionCall(kind: slp, slp: Expression(kind: intOrReg, intOrReg: IntOrReg(isReg: false, i: 1)))
+        ))
     }.toTable,
     ports: {
       'A': (
@@ -1002,6 +1124,7 @@ when isMainModule:
     code: parseMagasm(
       flags=flags,
       code="""
+        A = 2 + 2 * 2
         factorial(a=5)
         A = b
         slp 1
