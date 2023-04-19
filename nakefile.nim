@@ -6,7 +6,7 @@ proc genGodotApi() =
   let godotBin =
     if (let x = getEnv("GODOT_BIN"); x != ""): x
     else:
-      when defined(linux): "/bin/godot"
+      when defined(linux): "/bin/godot3-bin"
       else:
         echo "Invalid GODOT_BIN path: " & godotBin
         quit(-1)
@@ -47,7 +47,7 @@ task "build", "Build module for the current platform":
     else: nil
   createDir("_dlls")
   withDir "src":
-    direShell(["nimble", "c", ".."/"src"/"nimmod.nim", "-o:.."/"_dlls"/libFile])
+    direShell(["nimble", "c", "--app:lib", "--noMain", ".."/"src"/"nimmod.nim", "-o:.."/"_dlls"/libFile])
 
 task "buildWindows", "Cross-compile module from linux to windows":
   genGodotApi()
@@ -55,7 +55,7 @@ task "buildWindows", "Cross-compile module from linux to windows":
   let libFile = "nim" & bitsPostfix & ".dll"
   createDir("_dlls")
   withDir "src":
-    direShell(["nimble", "c", "-d:mingw", "--os:windows", "--cc:gcc", "--gcc.exe:/usr/bin/x86_64-w64-mingw32-gcc", "--gcc.linkerexe:/usr/bin/x86_64-w64-mingw32-gcc", ".."/"src"/"nimmod.nim", "-o:.."/"_dlls"/libFile])
+    direShell(["nimble", "c", "--app:lib", "--noMain", "-d:mingw", "--os:windows", "--cc:gcc", "--gcc.exe:/usr/bin/x86_64-w64-mingw32-gcc", "--gcc.linkerexe:/usr/bin/x86_64-w64-mingw32-gcc", ".."/"src"/"nimmod.nim", "-o:.."/"_dlls"/libFile])
 
 task "clean", "Remove files produced by build":
   removeDir(".nimcache")

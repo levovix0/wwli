@@ -4,4 +4,4 @@ description   = "Addition script for game, writed in Nim"
 license       = "MIT"
 
 requires "nim >= 1.6.8"
-requires "godot >= 0.8", "npeg", "fusion", "https://github.com/levovix0/hmatching"
+requires "godot >= 0.8", "npeg", "fusion", "https://github.com/levovix0/hmatching", "vmath"

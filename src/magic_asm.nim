@@ -14,8 +14,8 @@ type
   
   ConditionalExecution* = enum
     no
-    true
-    false
+    ctrue
+    cfalse
     error
   
   Function* = enum
@@ -31,6 +31,9 @@ type
     `mod`  ## "mod", a %= b
     pow  ## "pow", a ^= b
     rot  ## "root", a = pow(a, 1/b)
+
+    fadd  ## "float add", a += b (in float mode)
+    fmul  ## "float mul", a *= b (in float mode)
 
     neg  ## "negative", a = -a
 
@@ -75,13 +78,13 @@ type
     of r64: reg4: array[4, char]
 
   IsReg* = enum
-    true
-    false
+    irTrue
+    irFalse
 
   IntOrReg* = object
-    case isReg: IsReg
-    of true: reg: Register
-    of false: i: int64
+    case isReg*: IsReg
+    of irTrue: reg*: Register
+    of irFalse: i*: int64
   
   UnaryExpressionKind* = enum
     neg
@@ -138,6 +141,11 @@ type
       pow*: tuple[a: Register, b: Expression]
     of rot:
       rot*: tuple[a: Register, b: Expression]
+
+    of fadd:
+      fadd*: tuple[a: Register, b: Expression]
+    of fmul:
+      fmul*: tuple[a: Register, b: Expression]
     
     of neg:
       neg*: Register
@@ -246,7 +254,7 @@ type
     customFunctions*: Table[string, proc(vm: var MagasmVmInstance, args: seq[Expression])]
     code*: MagasmCode
     flags*: set[MagasmFlag]
-    recursionLimit: int
+    recursionLimit*: int
 
   MagasmVmInstance* = object
     memory*: Table[char, int16]
@@ -262,7 +270,7 @@ type
     istack*: seq[int]  ## instruction pointer stack
     fstack*: seq[seq[tuple[reg: Register, val: int64]]]  ## frame stack
     err*: Option[tuple[e: MagasmError, stepsPassed: int]]  ## last error
-    ce*: set[ConditionalExecution.true..ConditionalExecution.error]
+    ce*: set[ConditionalExecution.ctrue..ConditionalExecution.error]
   
 
   StepResultKind* = enum
@@ -330,13 +338,13 @@ proc `[]`*(vm: MagasmVmInstance, x: Register): int64 =
   of r64: vm[x.reg4]
 
 proc `[]`*(vm: MagasmVmInstance, x: IntOrReg): int64 =
-  if x.isReg == true: vm[x.reg]
+  if x.isReg == irTrue: vm[x.reg]
   else: x.i
 
 proc `[]`*(vm: MagasmVmInstance, x: Expression): int64 =
   case x.kind
   of intOrReg:
-    if x.intOrReg.isReg == true: vm[x.intOrReg.reg]
+    if x.intOrReg.isReg == irTrue: vm[x.intOrReg.reg]
     else: x.intOrReg.i
   of unary:
     case x.unary.kind
@@ -419,11 +427,11 @@ proc step*(vm: var MagasmVmInstance): StepResult =
 
     template setCond(x: bool) =
       if x:
-        vm.ce.incl true
-        vm.ce.excl false
+        vm.ce.incl ctrue
+        vm.ce.excl cfalse
       else:
-        vm.ce.excl true
-        vm.ce.incl false
+        vm.ce.excl ctrue
+        vm.ce.incl cfalse
       inc vm.i
     
     proc puf(vm: var MagasmVmInstance, vars: seq[Register]) =
@@ -516,6 +524,17 @@ proc step*(vm: var MagasmVmInstance): StepResult =
       inc vm.i
 
 
+    of functionCall(functionCall: fadd(fadd: (@a, @b))):
+      makeSureVmHasFunction fadd
+      vm[a] = cast[int64](cast[float64](vm[a]) + cast[float64](vm[b]))
+      inc vm.i
+
+    of functionCall(functionCall: fmul(fmul: (@a, @b))):
+      makeSureVmHasFunction fmul
+      vm[a] = cast[int64](cast[float64](vm[a]) * cast[float64](vm[b]))
+      inc vm.i
+
+
     of functionCall(functionCall: neg(neg: @a)):
       makeSureVmHasFunction neg
       vm[a] = -vm[a]
@@ -587,16 +606,16 @@ proc step*(vm: var MagasmVmInstance): StepResult =
       makeSureVmHasFunction sce
       let mask = vm[x]
       vm.ce = {}
-      if ((mask and 0x1) == 0x1): vm.ce.incl true
-      if ((mask and 0x2) == 0x2): vm.ce.incl false
+      if ((mask and 0x1) == 0x1): vm.ce.incl ctrue
+      if ((mask and 0x2) == 0x2): vm.ce.incl cfalse
       if ((mask and 0x4) == 0x4): vm.ce.incl error
       inc vm.i
     
     of functionCall(functionCall: gce(gce: @x)):
       makeSureVmHasFunction gce
       var mask: int64
-      if true in vm.ce: mask += 0x1
-      if false in vm.ce: mask += 0x2
+      if ctrue in vm.ce: mask += 0x1
+      if cfalse in vm.ce: mask += 0x2
       if error in vm.ce: mask += 0x4
       vm[x] = mask
       inc vm.i
@@ -636,8 +655,12 @@ proc step*(vm: var MagasmVmInstance): StepResult =
         template alph(x): bool = (i+x < s.len and s[i+x].Rune.isAlpha)
         template st: bool = (s[i] == '{')
         template en(x): bool = (i+x < s.len and s[i+x] == '}')
+        template fp(x): bool = (i+x < s.len and s[i+x] == '.')
         template ad(n, v) =
           r.add $vm[v]
+          i += n
+        template adf(n, v) =
+          r.add $cast[float64](vm[v])
           i += n
         
         if st and alph(1) and en(2):
@@ -646,6 +669,12 @@ proc step*(vm: var MagasmVmInstance): StepResult =
           ad(3, [s[i+1], s[i+2]])
         elif (reg4 in vm.flags) and st and alph(1) and alph(2) and alph(3) and alph(4) and en(5):
           ad(5, [s[i+1], s[i+2], s[i+3], s[i+4]])
+        elif st and alph(1) and fp(2) and en(3):
+          adf(3, s[i+1])
+        elif (reg2 in vm.flags) and st and alph(1) and alph(2) and fp(3) and en(4):
+          adf(4, [s[i+1], s[i+2]])
+        elif (reg4 in vm.flags) and st and alph(1) and alph(2) and alph(3) and alph(4) and fp(5) and en(6):
+          adf(6, [s[i+1], s[i+2], s[i+3], s[i+4]])
         else:
           r.add s[i]
         
@@ -761,7 +790,7 @@ proc parseMagasm*(
           r.add x
           skip()
         if '.' in r:
-          result.add Token(kind: num, num: cast[int32](parseFloat(r).float32).int64)
+          result.add Token(kind: num, num: cast[int64](parseFloat(r).float64).int64)
         else:
           result.add Token(kind: num, num: parseInt(r).int64)
       
@@ -877,9 +906,9 @@ proc parseMagasm*(
     
     proc toIntOrReg(x: Token): IntOrReg =
       if x.kind == num:
-        IntOrReg(isReg: false, i: x.num)
+        IntOrReg(isReg: irFalse, i: x.num)
       else:
-        IntOrReg(isReg: true, reg: x.toRegister)
+        IntOrReg(isReg: irTrue, reg: x.toRegister)
 
     proc parseMathExpression(): Expression =
       proc intOrReg(): Expression =
@@ -935,8 +964,8 @@ proc parseMagasm*(
 
       if (let x = peek(); x.kind == op and x.op in ["+", "-", "*"]):
         case x.op
-        of "+": r.ce = true
-        of "-": r.ce = false
+        of "+": r.ce = ctrue
+        of "-": r.ce = cfalse
         of "*": r.ce = error
         inc i
       
@@ -1108,7 +1137,7 @@ when isMainModule:
         if i notin 0..vm.code.high: return
         vm.code[i] = StatementCe(statement: Statement(
           kind: functionCall,
-          functionCall: FunctionCall(kind: slp, slp: Expression(kind: intOrReg, intOrReg: IntOrReg(isReg: false, i: 1)))
+          functionCall: FunctionCall(kind: slp, slp: Expression(kind: intOrReg, intOrReg: IntOrReg(isReg: irFalse, i: 1)))
         ))
     }.toTable,
     ports: {

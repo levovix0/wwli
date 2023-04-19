@@ -6,6 +6,13 @@ var mode = 0  # 0 - menu isn't open, 1 - menu is open
 var isInterpolating = false
 var targetMode = 0
 
+export var targetPath: NodePath
+var target
+
+
+func _ready():
+	target = get_node(targetPath)
+
 
 func animateParams(t):
 	modulate = Color(1, 1, 1, t)
@@ -37,3 +44,7 @@ func _process(delta):
 		get_tree().paused = targetMode == 1
 		if targetMode == 0:
 			visible = false
+
+
+func _on_TextEdit_text_changed():
+	target.update_code($TextEdit.text)

@@ -1,4 +1,4 @@
 when not defined(release):
   import segfaults
 
-import enemy
+import simple_world, magic_view
